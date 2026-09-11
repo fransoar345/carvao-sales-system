@@ -12,7 +12,7 @@ Crie um repositorio no GitHub e envie a pasta `carvao-sales-system`.
 2. Crie um novo projeto.
 3. Adicione um banco PostgreSQL.
 4. Adicione um servico a partir do repositorio GitHub.
-5. Se o Railway pedir diretório raiz, use `backend`. Se ele estiver usando a raiz do repositório, tudo bem: existe `Dockerfile`, `requirements.txt` e `start.sh` na raiz para subir o backend.
+5. Se o Railway pedir diretório raiz, use `backend`. Se ele estiver usando a raiz do repositório, tudo bem: existe `Dockerfile`, `requirements.txt` e `start.sh` na raiz para subir o backend. Tambem existe `backend/start.sh`, caso o Railway esteja com root em `backend`.
 6. Configure as variaveis:
 
 ```env
