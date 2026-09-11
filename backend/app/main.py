@@ -270,6 +270,19 @@ def update_seller(seller_id: int, payload: schemas.SellerUpdate, db: Session = D
     return schemas.SellerOut(id=seller.id, name=seller.name, phone=seller.phone, monthly_goal=seller.monthly_goal, commission_percent=seller.commission_percent, active=seller.active, email=seller.user.email if seller.user else None)
 
 
+@app.delete("/api/sellers/{seller_id}")
+def delete_seller(seller_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+    seller = db.get(models.Seller, seller_id)
+    if not seller:
+        raise HTTPException(404, "Vendedor nao encontrado")
+    seller.active = False
+    if seller.user:
+        seller.user.active = False
+    audit(db, user, "deactivate", "seller", seller.id, seller.name)
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/sales", response_model=list[schemas.SaleOut])
 def list_sales(
     start: date | None = None,

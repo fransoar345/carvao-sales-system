@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   BarChart3,
   Boxes,
+  Trash2,
   Download,
   LogOut,
   MessageCircle,
@@ -222,14 +223,16 @@ function ProductForm({ form, setForm, save }) {
 
 function Stock({ api }) {
   const [form, setForm] = useState({ product_id: "", movement_type: "entrada", quantity: 1, note: "" });
-  const products = useLoad(api, () => api.call("/products"), []).data || [];
+  const productsLoad = useLoad(api, () => api.call("/products"), []);
+  const products = productsLoad.data || [];
   const { data: movements, reload } = useLoad(api, () => api.call("/stock/movements"), []);
   async function save(e) {
     e.preventDefault();
     await api.call("/stock/movements", { method: "POST", body: JSON.stringify({ ...form, product_id: Number(form.product_id) }) });
+    productsLoad.reload();
     reload();
   }
-  return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>Entrada/Saida de Estoque</h2><select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required><option value="">Produto</option>{products.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.current_stock}</option>)}</select><select value={form.movement_type} onChange={(e) => setForm({ ...form, movement_type: e.target.value })}><option value="entrada">Entrada</option><option value="saida">Saida</option><option value="ajuste">Ajuste positivo</option><option value="devolucao">Devolucao</option></select><input type="number" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} /><textarea placeholder="Observacao" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /><button className="primary">Registrar Movimentacao</button></form>} list={(movements || []).map((m) => <Row key={m.id} title={`${m.product_name} · ${m.movement_type}`} meta={`${m.quantity} em ${new Date(m.occurred_at).toLocaleString("pt-BR")} · ${m.note || ""}`} />)} />;
+  return <section className="stock-page"><CrudLayout form={<form className="panel form" onSubmit={save}><h2>Entrada/Saida de Estoque</h2><select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required><option value="">Produto</option>{products.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.current_stock} {p.unit}</option>)}</select><select value={form.movement_type} onChange={(e) => setForm({ ...form, movement_type: e.target.value })}><option value="entrada">Entrada</option><option value="saida">Saida</option><option value="ajuste">Ajuste positivo</option><option value="devolucao">Devolucao</option></select><input type="number" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} /><textarea placeholder="Observacao" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /><button className="primary">Registrar Movimentacao</button></form>} list={(movements || []).map((m) => <Row key={m.id} title={`${m.product_name} · ${m.movement_type}`} meta={`${m.quantity} em ${new Date(m.occurred_at).toLocaleString("pt-BR")} · ${m.note || ""}`} />)} /><Panel title="Quantidade atual dos produtos" className="full">{products.map((p) => <StockLine key={p.id} p={p} />)}</Panel></section>;
 }
 
 function Sellers({ api }) {
@@ -242,7 +245,12 @@ function Sellers({ api }) {
     setForm(empty);
     reload();
   }
-  return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>Cadastro de Vendedor</h2>{["name", "phone", "email", "temporary_password"].map((k) => <input key={k} placeholder={k} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} required />)}<input type="number" step="0.01" placeholder="Meta mensal" value={form.monthly_goal} onChange={(e) => setForm({ ...form, monthly_goal: Number(e.target.value) })} /><input type="number" step="0.01" placeholder="Comissao %" value={form.commission_percent} onChange={(e) => setForm({ ...form, commission_percent: Number(e.target.value) })} /><button className="primary">Salvar Vendedor</button></form>} list={(sellers || []).map((s) => <Row key={s.id} title={s.name} meta={`${s.phone} · ${s.email} · ${s.active ? "ativo" : "inativo"}`} />)} />;
+  async function removeSeller(seller) {
+    if (!window.confirm(`Excluir vendedor ${seller.name}? O historico de vendas sera mantido.`)) return;
+    await api.call(`/sellers/${seller.id}`, { method: "DELETE" });
+    reload();
+  }
+  return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>Cadastro de Vendedor</h2>{["name", "phone", "email", "temporary_password"].map((k) => <input key={k} placeholder={k} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} required />)}<input type="number" step="0.01" placeholder="Meta mensal" value={form.monthly_goal} onChange={(e) => setForm({ ...form, monthly_goal: Number(e.target.value) })} /><input type="number" step="0.01" placeholder="Comissao %" value={form.commission_percent} onChange={(e) => setForm({ ...form, commission_percent: Number(e.target.value) })} /><button className="primary">Salvar Vendedor</button></form>} list={(sellers || []).map((s) => <Row key={s.id} title={s.name} meta={`${s.phone} · ${s.email} · ${s.active ? "ativo" : "inativo"}`} actions={<button className="danger" onClick={() => removeSeller(s)}><Trash2 size={16} /> Excluir</button>} />)} />;
 }
 
 function Sales({ api, user }) {
@@ -275,8 +283,8 @@ function CrudLayout({ form, list }) {
   return <section className="crud">{form}<div className="panel list"><h2>Registros</h2>{list}</div></section>;
 }
 
-function Row({ title, meta, onEdit }) {
-  return <div className="row"><div><strong>{title}</strong><span>{meta}</span></div>{onEdit && <button onClick={onEdit}>Editar</button>}</div>;
+function Row({ title, meta, onEdit, actions }) {
+  return <div className="row"><div><strong>{title}</strong><span>{meta}</span></div><div className="row-actions">{onEdit && <button onClick={onEdit}>Editar</button>}{actions}</div></div>;
 }
 
 function Loading() {

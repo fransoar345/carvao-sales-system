@@ -30,6 +30,7 @@ header p, .hint { color: #66756b; margin-top: 4px; }
 .full, .wide { grid-column: 1 / -1; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .toolbar button, .row button { min-height: 40px; border-radius: 8px; padding: 0 12px; display: inline-flex; align-items: center; gap: 8px; background: #e6ece5; color: #1f2a23; }
+.row button.danger { background: #fee4e2; color: #912018; }
 .metric span { color: #66756b; display: block; margin-bottom: 8px; }
 .metric strong { font-size: 26px; }
 .stock, .rank, .row { display: flex; justify-content: space-between; gap: 14px; padding: 12px 0; border-top: 1px solid #edf1eb; align-items: center; }
@@ -37,6 +38,8 @@ header p, .hint { color: #66756b; margin-top: 4px; }
 .stock.low b { color: #b42318; }
 .rank span, .row span { display: block; color: #66756b; font-size: 14px; margin-top: 3px; }
 .crud { display: grid; grid-template-columns: minmax(300px, 420px) 1fr; gap: 16px; align-items: start; }
+.stock-page { display: grid; gap: 16px; }
+.row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .form { display: grid; gap: 11px; }
 .form.max { max-width: 620px; }
 input, select, textarea { width: 100%; border: 1px solid #cfd8cd; border-radius: 8px; min-height: 44px; padding: 0 12px; background: #fbfcfa; color: #17201a; }

@@ -1,5 +1,5 @@
 from datetime import datetime, time
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class Token(BaseModel):
@@ -81,7 +81,7 @@ class SellerCreate(BaseModel):
     phone: str
     monthly_goal: float | None = None
     commission_percent: float | None = None
-    email: EmailStr
+    email: str
     temporary_password: str = Field(min_length=6)
 
 
