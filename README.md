@@ -11,7 +11,7 @@ Aplicacao online com backend FastAPI, frontend React/Vite e suporte a PostgreSQL
 - Lancamento de vendas mobile-first com baixa automatica de estoque.
 - Dashboard com estoque atual, total vendido, ranking, comissao e filtros.
 - Exportacao de vendas em Excel e PDF.
-- Configuracao de WhatsApp com modo `mock` e estrutura para Meta, Z-API ou Twilio.
+- Configuracao de alertas com modo `mock`, Telegram Bot e estrutura para Meta, Z-API ou Twilio.
 - Seed automatico para testar imediatamente.
 
 ## Credenciais de teste
@@ -73,6 +73,10 @@ O modo padrao `mock` registra as mensagens no console. Para provedor real, confi
 - `MANAGER_WHATSAPP`
 
 O endpoint atual envia `{ "to": "...", "message": "..." }` com bearer token. Caso o provedor escolhido tenha formato diferente, ajuste `backend/app/whatsapp.py`.
+
+### Telegram
+
+Crie um bot com o `@BotFather`, envie `/start` para o bot e obtenha o `chat.id` em `https://api.telegram.org/botSEU_TOKEN/getUpdates`. Na tela de alertas, selecione `Telegram Bot`, informe o token e o Chat ID do gestor ou grupo. O Telegram envia os alertas ao chat configurado; ele nao localiza vendedores pelo numero de telefone.
 
 ## Backup e deploy
 

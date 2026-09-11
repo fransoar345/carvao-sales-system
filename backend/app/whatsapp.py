@@ -25,12 +25,21 @@ def get_whatsapp_settings(db: Session) -> models.WhatsAppSettings:
 
 async def send_whatsapp(db: Session, to: str, message: str) -> dict:
     settings = get_whatsapp_settings(db)
-    if settings.provider == "mock" or not settings.api_url:
+    if settings.provider == "mock":
         print(f"[WHATSAPP MOCK] to={to} message={message}")
         return {"ok": True, "provider": "mock"}
 
-    headers = {"Authorization": f"Bearer {settings.token}"} if settings.token else {}
-    if settings.provider == "meta":
+    if settings.provider == "telegram":
+        if not settings.token or not to:
+            raise ValueError("Configure o token do bot e o Chat ID do Telegram")
+        api_url = f"https://api.telegram.org/bot{settings.token}/sendMessage"
+        headers = {}
+        payload = {"chat_id": to, "text": message}
+    elif settings.provider == "meta":
+        if not settings.api_url or not settings.token:
+            raise ValueError("Configure a URL e o token da Meta Cloud API")
+        api_url = settings.api_url
+        headers = {"Authorization": f"Bearer {settings.token}"}
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -39,11 +48,22 @@ async def send_whatsapp(db: Session, to: str, message: str) -> dict:
             "text": {"preview_url": False, "body": message},
         }
     else:
+        if not settings.api_url:
+            raise ValueError("Configure a URL da API de mensagens")
+        api_url = settings.api_url
+        headers = {"Authorization": f"Bearer {settings.token}"} if settings.token else {}
         payload = {"to": to, "message": message}
     async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(settings.api_url, json=payload, headers=headers)
+        response = await client.post(api_url, json=payload, headers=headers)
         response.raise_for_status()
         return {"ok": True, "provider": settings.provider, "status_code": response.status_code}
+
+
+async def send_notification_safely(db: Session, to: str, message: str) -> None:
+    try:
+        await send_whatsapp(db, to, message)
+    except Exception as exc:
+        print(f"[NOTIFICATION ERROR] provider={get_whatsapp_settings(db).provider} error={exc}")
 
 
 async def notify_sale(db: Session, sale: models.Sale) -> None:
@@ -56,14 +76,15 @@ async def notify_sale(db: Session, sale: models.Sale) -> None:
         f"Total R$ {sale.total_value:.2f} via {sale.payment_method}."
     )
     seller_message = f"Venda registrada com sucesso. Total R$ {sale.total_value:.2f}."
-    await send_whatsapp(db, settings.manager_phone, manager_message)
-    await send_whatsapp(db, sale.seller.phone, seller_message)
+    await send_notification_safely(db, settings.manager_phone, manager_message)
+    if settings.provider != "telegram":
+        await send_notification_safely(db, sale.seller.phone, seller_message)
 
 
 async def notify_low_stock(db: Session, product: models.Product) -> None:
     settings = get_whatsapp_settings(db)
     if settings.low_stock_alerts and product.current_stock <= product.minimum_stock:
-        await send_whatsapp(
+        await send_notification_safely(
             db,
             settings.manager_phone,
             f"Alerta de estoque baixo: {product.name} com {product.current_stock:g} {product.unit}.",
@@ -85,4 +106,4 @@ async def send_daily_summary(db: Session, day: datetime | None = None) -> None:
     sellers = "; ".join(f"{name}: R$ {value:.2f}" for name, value in by_seller.items()) or "sem vendas"
     low_stock = db.query(models.Product).filter(models.Product.current_stock <= models.Product.minimum_stock).all()
     stock_text = ", ".join(f"{p.name} {p.current_stock:g}" for p in low_stock) or "sem alertas"
-    await send_whatsapp(db, settings.manager_phone, f"Resumo diario: {len(sales)} vendas, total R$ {total:.2f}. Por vendedor: {sellers}. Estoque baixo: {stock_text}.")
+    await send_notification_safely(db, settings.manager_phone, f"Resumo diario: {len(sales)} vendas, total R$ {total:.2f}. Por vendedor: {sellers}. Estoque baixo: {stock_text}.")
