@@ -30,7 +30,16 @@ async def send_whatsapp(db: Session, to: str, message: str) -> dict:
         return {"ok": True, "provider": "mock"}
 
     headers = {"Authorization": f"Bearer {settings.token}"} if settings.token else {}
-    payload = {"to": to, "message": message}
+    if settings.provider == "meta":
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": "".join(character for character in to if character.isdigit()),
+            "type": "text",
+            "text": {"preview_url": False, "body": message},
+        }
+    else:
+        payload = {"to": to, "message": message}
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(settings.api_url, json=payload, headers=headers)
         response.raise_for_status()

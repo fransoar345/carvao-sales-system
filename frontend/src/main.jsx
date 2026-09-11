@@ -270,13 +270,24 @@ function Sales({ api, user }) {
 
 function WhatsApp({ api }) {
   const { data, setData } = useLoad(api, () => api.call("/whatsapp/settings"), []);
+  const [testStatus, setTestStatus] = useState("");
   if (!data) return <Loading />;
   async function save(e) {
     e.preventDefault();
     const saved = await api.call("/whatsapp/settings", { method: "PUT", body: JSON.stringify(data) });
     setData(saved);
+    setTestStatus("Configuracoes salvas.");
   }
-  return <form className="panel form max" onSubmit={save}><h2>Configuracoes de WhatsApp</h2><select value={data.provider} onChange={(e) => setData({ ...data, provider: e.target.value })}><option value="mock">Mock</option><option value="meta">Meta Cloud API</option><option value="zapi">Z-API</option><option value="twilio">Twilio</option></select><input placeholder="URL da API" value={data.api_url || ""} onChange={(e) => setData({ ...data, api_url: e.target.value })} /><input placeholder="Token da API" value={data.token || ""} onChange={(e) => setData({ ...data, token: e.target.value })} /><input placeholder="WhatsApp do gestor" value={data.manager_phone} onChange={(e) => setData({ ...data, manager_phone: e.target.value })} /><label className="check"><input type="checkbox" checked={data.sale_notifications} onChange={(e) => setData({ ...data, sale_notifications: e.target.checked })} /> notificacao por venda</label><label className="check"><input type="checkbox" checked={data.low_stock_alerts} onChange={(e) => setData({ ...data, low_stock_alerts: e.target.checked })} /> alerta de estoque baixo</label><label className="check"><input type="checkbox" checked={data.daily_summary} onChange={(e) => setData({ ...data, daily_summary: e.target.checked })} /> resumo diario</label><input type="time" value={data.daily_summary_time?.slice(0, 5)} onChange={(e) => setData({ ...data, daily_summary_time: e.target.value })} /><button className="primary">Salvar Configuracoes</button></form>;
+  async function testConnection() {
+    setTestStatus("Enviando mensagem de teste...");
+    try {
+      await api.call("/whatsapp/test", { method: "POST" });
+      setTestStatus("Mensagem de teste enviada.");
+    } catch (error) {
+      setTestStatus(`Falha no teste: ${error.message}`);
+    }
+  }
+  return <form className="panel form max" onSubmit={save}><h2>Configuracoes de WhatsApp</h2><label className="field"><span>Provedor</span><select value={data.provider} onChange={(e) => setData({ ...data, provider: e.target.value })}><option value="mock">Mock</option><option value="meta">Meta Cloud API</option><option value="zapi">Z-API</option><option value="twilio">Twilio</option></select></label><label className="field"><span>URL da API</span><input placeholder="https://graph.facebook.com/VERSAO/PHONE_NUMBER_ID/messages" value={data.api_url || ""} onChange={(e) => setData({ ...data, api_url: e.target.value })} /></label><label className="field"><span>Token de acesso</span><input type="password" placeholder="Token gerado pela Meta" value={data.token || ""} onChange={(e) => setData({ ...data, token: e.target.value })} /></label><label className="field"><span>WhatsApp do gestor</span><input placeholder="Ex.: +5563999999999" value={data.manager_phone} onChange={(e) => setData({ ...data, manager_phone: e.target.value })} /></label><label className="check"><input type="checkbox" checked={data.sale_notifications} onChange={(e) => setData({ ...data, sale_notifications: e.target.checked })} /> notificacao por venda</label><label className="check"><input type="checkbox" checked={data.low_stock_alerts} onChange={(e) => setData({ ...data, low_stock_alerts: e.target.checked })} /> alerta de estoque baixo</label><label className="check"><input type="checkbox" checked={data.daily_summary} onChange={(e) => setData({ ...data, daily_summary: e.target.checked })} /> resumo diario</label><label className="field"><span>Horario do resumo diario</span><input type="time" value={data.daily_summary_time?.slice(0, 5)} onChange={(e) => setData({ ...data, daily_summary_time: e.target.value })} /></label><button className="primary">Salvar Configuracoes</button><button type="button" onClick={testConnection}>Enviar mensagem de teste</button>{testStatus && <p className="form-status">{testStatus}</p>}</form>;
 }
 
 function CrudLayout({ form, list }) {
