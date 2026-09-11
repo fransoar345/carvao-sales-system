@@ -247,7 +247,7 @@ function Sellers({ api }) {
   }
   async function removeSeller(seller) {
     if (!window.confirm(`Excluir vendedor ${seller.name}? O historico de vendas sera mantido.`)) return;
-    await api.call(`/sellers/${seller.id}`, { method: "DELETE" });
+    await api.call(`/sellers/${seller.id}`, { method: "PUT", body: { active: false } });
     reload();
   }
   return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>Cadastro de Vendedor</h2>{["name", "phone", "email", "temporary_password"].map((k) => <input key={k} placeholder={k} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} required />)}<input type="number" step="0.01" placeholder="Meta mensal" value={form.monthly_goal} onChange={(e) => setForm({ ...form, monthly_goal: Number(e.target.value) })} /><input type="number" step="0.01" placeholder="Comissao %" value={form.commission_percent} onChange={(e) => setForm({ ...form, commission_percent: Number(e.target.value) })} /><button className="primary">Salvar Vendedor</button></form>} list={(sellers || []).map((s) => <Row key={s.id} title={s.name} meta={`${s.phone} · ${s.email} · ${s.active ? "ativo" : "inativo"}`} actions={<button className="danger" onClick={() => removeSeller(s)}><Trash2 size={16} /> Excluir</button>} />)} />;
