@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import date, datetime, time
 from pydantic import BaseModel, Field
 
 
@@ -141,6 +141,52 @@ class SaleOut(BaseModel):
     payment_method: str
     status: str
     items: list[SaleItemOut]
+
+
+class DeliveryManifestItemCreate(BaseModel):
+    sale_id: int
+    delivery_address: str = Field(min_length=3, max_length=300)
+    delivery_order: int = Field(default=1, ge=1)
+
+
+class DeliveryManifestCreate(BaseModel):
+    delivery_date: date
+    driver_name: str = Field(min_length=2, max_length=120)
+    vehicle: str | None = Field(default=None, max_length=80)
+    notes: str | None = None
+    items: list[DeliveryManifestItemCreate] = Field(min_length=1)
+
+
+class DeliveryManifestStatusUpdate(BaseModel):
+    status: str
+
+
+class DeliveryItemStatusUpdate(BaseModel):
+    status: str
+    note: str | None = None
+
+
+class DeliveryManifestItemOut(BaseModel):
+    id: int
+    sale_id: int
+    delivery_address: str
+    delivery_order: int
+    status: str
+    delivered_at: datetime | None
+    note: str | None
+    sale: SaleOut
+
+
+class DeliveryManifestOut(BaseModel):
+    id: int
+    code: str
+    delivery_date: date
+    driver_name: str
+    vehicle: str | None
+    status: str
+    notes: str | None
+    created_at: datetime
+    items: list[DeliveryManifestItemOut]
 
 
 class WhatsAppSettingsIn(BaseModel):

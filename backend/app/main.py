@@ -97,6 +97,51 @@ def sale_to_schema(sale: models.Sale) -> schemas.SaleOut:
     )
 
 
+def delivery_manifest_options():
+    return (
+        joinedload(models.DeliveryManifest.items)
+        .joinedload(models.DeliveryManifestItem.sale)
+        .joinedload(models.Sale.seller),
+        joinedload(models.DeliveryManifest.items)
+        .joinedload(models.DeliveryManifestItem.sale)
+        .joinedload(models.Sale.items)
+        .joinedload(models.SaleItem.product),
+    )
+
+
+def get_delivery_manifest(db: Session, manifest_id: int) -> models.DeliveryManifest:
+    manifest = db.query(models.DeliveryManifest).options(*delivery_manifest_options()).filter(models.DeliveryManifest.id == manifest_id).first()
+    if not manifest:
+        raise HTTPException(404, "Romaneio nao encontrado")
+    return manifest
+
+
+def delivery_manifest_to_schema(manifest: models.DeliveryManifest) -> schemas.DeliveryManifestOut:
+    return schemas.DeliveryManifestOut(
+        id=manifest.id,
+        code=manifest.code,
+        delivery_date=manifest.delivery_date,
+        driver_name=manifest.driver_name,
+        vehicle=manifest.vehicle,
+        status=manifest.status,
+        notes=manifest.notes,
+        created_at=manifest.created_at,
+        items=[
+            schemas.DeliveryManifestItemOut(
+                id=item.id,
+                sale_id=item.sale_id,
+                delivery_address=item.delivery_address,
+                delivery_order=item.delivery_order,
+                status=item.status,
+                delivered_at=item.delivered_at,
+                note=item.note,
+                sale=sale_to_schema(item.sale),
+            )
+            for item in manifest.items
+        ],
+    )
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "app": settings.app_name}
@@ -340,6 +385,110 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
     for product in touched_products:
         await notify_low_stock(db, product)
     return sale_to_schema(sale)
+
+
+@app.get("/api/delivery-manifests/pending-sales", response_model=list[schemas.SaleOut])
+def list_sales_pending_delivery(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    assigned_sale_ids = (
+        db.query(models.DeliveryManifestItem.sale_id)
+        .join(models.DeliveryManifest)
+        .filter(models.DeliveryManifest.status != "cancelado")
+    )
+    sales = (
+        db.query(models.Sale)
+        .options(joinedload(models.Sale.seller), joinedload(models.Sale.items).joinedload(models.SaleItem.product))
+        .filter(models.Sale.status == "confirmada", ~models.Sale.id.in_(assigned_sale_ids))
+        .order_by(models.Sale.occurred_at.desc())
+        .all()
+    )
+    return [sale_to_schema(sale) for sale in sales]
+
+
+@app.get("/api/delivery-manifests", response_model=list[schemas.DeliveryManifestOut])
+def list_delivery_manifests(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    manifests = db.query(models.DeliveryManifest).options(*delivery_manifest_options()).order_by(models.DeliveryManifest.delivery_date.desc(), models.DeliveryManifest.id.desc()).limit(100).all()
+    return [delivery_manifest_to_schema(manifest) for manifest in manifests]
+
+
+@app.post("/api/delivery-manifests", response_model=schemas.DeliveryManifestOut)
+def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    sale_ids = [item.sale_id for item in payload.items]
+    if len(sale_ids) != len(set(sale_ids)):
+        raise HTTPException(400, "Uma venda nao pode aparecer duas vezes no mesmo romaneio")
+    already_assigned = (
+        db.query(models.DeliveryManifestItem)
+        .join(models.DeliveryManifest)
+        .filter(models.DeliveryManifestItem.sale_id.in_(sale_ids), models.DeliveryManifest.status != "cancelado")
+        .first()
+    )
+    if already_assigned:
+        raise HTTPException(400, f"A venda {already_assigned.sale_id} ja pertence a um romaneio ativo")
+    sales = db.query(models.Sale).filter(models.Sale.id.in_(sale_ids), models.Sale.status == "confirmada").all()
+    if len(sales) != len(sale_ids):
+        raise HTTPException(400, "Uma ou mais vendas nao foram encontradas")
+
+    manifest = models.DeliveryManifest(
+        code=f"ROM-{datetime.utcnow():%y%m%d%H%M%S%f}",
+        delivery_date=payload.delivery_date,
+        driver_name=payload.driver_name,
+        vehicle=payload.vehicle,
+        status="preparacao",
+        notes=payload.notes,
+        created_by_id=user.id,
+    )
+    for position, item in enumerate(sorted(payload.items, key=lambda row: row.delivery_order), start=1):
+        manifest.items.append(models.DeliveryManifestItem(
+            sale_id=item.sale_id,
+            delivery_address=item.delivery_address.strip(),
+            delivery_order=position,
+            status="pendente",
+        ))
+    db.add(manifest)
+    db.flush()
+    audit(db, user, "create", "delivery_manifest", manifest.id, f"{manifest.code} com {len(manifest.items)} entregas")
+    db.commit()
+    return delivery_manifest_to_schema(get_delivery_manifest(db, manifest.id))
+
+
+@app.put("/api/delivery-manifests/{manifest_id}/status", response_model=schemas.DeliveryManifestOut)
+def update_delivery_manifest_status(manifest_id: int, payload: schemas.DeliveryManifestStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    allowed = {"preparacao", "em_rota", "concluido", "cancelado"}
+    if payload.status not in allowed:
+        raise HTTPException(400, "Status de romaneio invalido")
+    manifest = get_delivery_manifest(db, manifest_id)
+    if payload.status == "concluido" and any(item.status != "entregue" for item in manifest.items):
+        raise HTTPException(400, "Confirme todas as entregas antes de concluir o romaneio")
+    manifest.status = payload.status
+    if payload.status == "cancelado":
+        for item in manifest.items:
+            if item.status != "entregue":
+                item.status = "cancelado"
+    audit(db, user, "status", "delivery_manifest", manifest.id, payload.status)
+    db.commit()
+    return delivery_manifest_to_schema(get_delivery_manifest(db, manifest.id))
+
+
+@app.put("/api/delivery-manifests/{manifest_id}/items/{item_id}", response_model=schemas.DeliveryManifestOut)
+def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.DeliveryItemStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    allowed = {"pendente", "entregue", "nao_entregue"}
+    if payload.status not in allowed:
+        raise HTTPException(400, "Status de entrega invalido")
+    manifest = get_delivery_manifest(db, manifest_id)
+    if manifest.status == "cancelado":
+        raise HTTPException(400, "Romaneio cancelado")
+    item = next((row for row in manifest.items if row.id == item_id), None)
+    if not item:
+        raise HTTPException(404, "Entrega nao encontrada")
+    item.status = payload.status
+    item.note = payload.note
+    item.delivered_at = datetime.utcnow() if payload.status == "entregue" else None
+    if manifest.status == "preparacao":
+        manifest.status = "em_rota"
+    if all(row.status == "entregue" for row in manifest.items):
+        manifest.status = "concluido"
+    audit(db, user, "status", "delivery_manifest_item", item.id, payload.status)
+    db.commit()
+    return delivery_manifest_to_schema(get_delivery_manifest(db, manifest.id))
 
 
 @app.get("/api/dashboard")

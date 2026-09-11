@@ -2,15 +2,21 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BarChart3,
+  Ban,
   Boxes,
+  CheckCircle2,
+  ClipboardList,
   Trash2,
   Download,
   LogOut,
   MessageCircle,
+  MapPin,
   PackagePlus,
+  Play,
   ReceiptText,
   Save,
   ShoppingCart,
+  Truck,
   Users,
 } from "lucide-react";
 import "./styles.css";
@@ -58,6 +64,7 @@ function App() {
     ["sale", "Venda", ShoppingCart, ["admin", "gerente", "vendedor"]],
     ["products", "Produtos", Boxes, ["admin", "gerente"]],
     ["stock", "Estoque", PackagePlus, ["admin", "gerente"]],
+    ["deliveries", "Romaneios", ClipboardList, ["admin", "gerente"]],
     ["sellers", "Vendedores", Users, ["admin"]],
     ["whatsapp", "WhatsApp", MessageCircle, ["admin"]],
   ].filter((item) => item[3].includes(user.role));
@@ -89,6 +96,7 @@ function App() {
         {tab === "sale" && <Sales api={api} user={user} />}
         {tab === "products" && <Products api={api} />}
         {tab === "stock" && <Stock api={api} />}
+        {tab === "deliveries" && <Deliveries api={api} />}
         {tab === "sellers" && <Sellers api={api} />}
         {tab === "whatsapp" && <WhatsApp api={api} />}
       </main>
@@ -266,6 +274,110 @@ function Sales({ api, user }) {
     reload();
   }
   return <CrudLayout form={<form className="panel form sale-form" onSubmit={save}><h2>Lancar Venda</h2>{user.role !== "vendedor" && <select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value })} required><option value="">Vendedor</option>{sellers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>}<select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required><option value="">Produto</option>{products.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name} · {money(p.sale_price)} · estoque {p.current_stock}</option>)}</select><input type="number" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} /><strong className="total">{money(total)}</strong><select value={form.payment_method} onChange={(e) => setForm({ ...form, payment_method: e.target.value })}><option value="dinheiro">Dinheiro</option><option value="pix">Pix</option><option value="cartao">Cartao</option><option value="prazo">A prazo</option></select><input placeholder="Cliente" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} /><input placeholder="Telefone do cliente" value={form.customer_phone} onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} /><button className="primary big"><ReceiptText size={18} /> Confirmar Venda</button></form>} list={(sales || []).map((s) => <Row key={s.id} title={`${s.seller_name} · ${money(s.total_value)}`} meta={`${new Date(s.occurred_at).toLocaleString("pt-BR")} · ${s.payment_method} · ${s.items.map((i) => `${i.quantity}x ${i.product_name}`).join(", ")}`} />)} />;
+}
+
+const deliveryStatus = {
+  preparacao: "Em preparacao",
+  em_rota: "Em rota",
+  concluido: "Concluido",
+  cancelado: "Cancelado",
+  pendente: "Pendente",
+  entregue: "Entregue",
+  nao_entregue: "Nao entregue",
+};
+
+function Deliveries({ api }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [form, setForm] = useState({ delivery_date: today, driver_name: "", vehicle: "", notes: "" });
+  const [selected, setSelected] = useState({});
+  const [message, setMessage] = useState("");
+  const pendingLoad = useLoad(api, () => api.call("/delivery-manifests/pending-sales"), []);
+  const manifestsLoad = useLoad(api, () => api.call("/delivery-manifests"), []);
+  const pendingSales = pendingLoad.data || [];
+  const manifests = manifestsLoad.data || [];
+
+  function toggleSale(sale) {
+    setSelected((current) => {
+      const next = { ...current };
+      if (next[sale.id]) delete next[sale.id];
+      else next[sale.id] = { delivery_address: "", delivery_order: Object.keys(current).length + 1 };
+      return next;
+    });
+  }
+
+  function updateAddress(saleId, delivery_address) {
+    setSelected((current) => ({ ...current, [saleId]: { ...current[saleId], delivery_address } }));
+  }
+
+  async function createManifest(e) {
+    e.preventDefault();
+    setMessage("");
+    const items = Object.entries(selected).map(([saleId, item], index) => ({ sale_id: Number(saleId), delivery_address: item.delivery_address.trim(), delivery_order: index + 1 }));
+    if (!items.length) return setMessage("Selecione pelo menos uma venda.");
+    if (items.some((item) => !item.delivery_address)) return setMessage("Informe o endereco de todas as entregas.");
+    try {
+      await api.call("/delivery-manifests", { method: "POST", body: JSON.stringify({ ...form, items }) });
+      setForm({ delivery_date: today, driver_name: "", vehicle: "", notes: "" });
+      setSelected({});
+      setMessage("Romaneio criado com sucesso.");
+      pendingLoad.reload();
+      manifestsLoad.reload();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }
+
+  async function updateManifestStatus(manifestId, status) {
+    try {
+      await api.call(`/delivery-manifests/${manifestId}/status`, { method: "PUT", body: JSON.stringify({ status }) });
+      setMessage("Romaneio atualizado.");
+      pendingLoad.reload();
+      manifestsLoad.reload();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }
+
+  async function updateDelivery(manifestId, itemId, status) {
+    try {
+      await api.call(`/delivery-manifests/${manifestId}/items/${itemId}`, { method: "PUT", body: JSON.stringify({ status }) });
+      setMessage(status === "entregue" ? "Entrega confirmada." : "Entrega marcada como nao realizada.");
+      manifestsLoad.reload();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }
+
+  return <section className="delivery-page">
+    <div className="delivery-create">
+      <form className="panel form" onSubmit={createManifest}>
+        <h2>Novo romaneio</h2>
+        <label className="field"><span>Data da entrega</span><input type="date" value={form.delivery_date} onChange={(e) => setForm({ ...form, delivery_date: e.target.value })} required /></label>
+        <label className="field"><span>Motorista</span><input value={form.driver_name} onChange={(e) => setForm({ ...form, driver_name: e.target.value })} placeholder="Nome do motorista" required /></label>
+        <label className="field"><span>Veiculo</span><input value={form.vehicle} onChange={(e) => setForm({ ...form, vehicle: e.target.value })} placeholder="Modelo ou placa" /></label>
+        <label className="field"><span>Observacoes</span><textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Rota, horario ou orientacoes" /></label>
+        <button className="primary"><ClipboardList size={18} /> Criar romaneio</button>
+        {message && <p className="form-status">{message}</p>}
+      </form>
+      <div className="panel pending-deliveries">
+        <h2>Vendas aguardando entrega</h2>
+        {!pendingSales.length && <p className="empty-state">Nenhuma venda pendente.</p>}
+        {pendingSales.map((sale) => <div className={`delivery-choice ${selected[sale.id] ? "selected" : ""}`} key={sale.id}>
+          <label className="delivery-check"><input type="checkbox" checked={Boolean(selected[sale.id])} onChange={() => toggleSale(sale)} /><span><b>{sale.customer_name || `Venda #${sale.id}`}</b><small>{sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")} · {money(sale.total_value)}</small></span></label>
+          {selected[sale.id] && <label className="field address-field"><span><MapPin size={14} /> Endereco de entrega</span><input value={selected[sale.id].delivery_address} onChange={(e) => updateAddress(sale.id, e.target.value)} placeholder="Rua, numero, bairro e referencia" /></label>}
+        </div>)}
+      </div>
+    </div>
+    <div className="manifest-section">
+      <div className="section-title"><div><h2>Romaneios</h2><p>Acompanhe a separacao, rota e confirmacao das entregas.</p></div><button onClick={() => { pendingLoad.reload(); manifestsLoad.reload(); }}>Atualizar</button></div>
+      {!manifests.length && <div className="panel empty-state">Nenhum romaneio criado.</div>}
+      {manifests.map((manifest) => <article className="panel manifest" key={manifest.id}>
+        <div className="manifest-header"><div><span className={`status status-${manifest.status}`}>{deliveryStatus[manifest.status]}</span><h2>{manifest.code}</h2><p>{new Date(`${manifest.delivery_date}T12:00:00`).toLocaleDateString("pt-BR")} · {manifest.driver_name}{manifest.vehicle ? ` · ${manifest.vehicle}` : ""}</p></div><div className="manifest-actions">{manifest.status === "preparacao" && <button onClick={() => updateManifestStatus(manifest.id, "em_rota")}><Play size={16} /> Iniciar rota</button>}{manifest.status !== "cancelado" && manifest.status !== "concluido" && <button className="danger" onClick={() => updateManifestStatus(manifest.id, "cancelado")}><Ban size={16} /> Cancelar</button>}</div></div>
+        {manifest.notes && <p className="manifest-notes">{manifest.notes}</p>}
+        <div className="delivery-items">{manifest.items.map((item) => <div className="delivery-item" key={item.id}><div className="delivery-order">{item.delivery_order}</div><div className="delivery-info"><b>{item.sale.customer_name || `Venda #${item.sale_id}`}</b><span><MapPin size={14} /> {item.delivery_address}</span><small>{item.sale.items.map((saleItem) => `${saleItem.quantity}x ${saleItem.product_name}`).join(", ")} · {money(item.sale.total_value)}</small></div><div className="delivery-result"><span className={`status status-${item.status}`}>{deliveryStatus[item.status]}</span>{manifest.status !== "cancelado" && item.status !== "entregue" && <div><button className="success" onClick={() => updateDelivery(manifest.id, item.id, "entregue")} title="Confirmar entrega"><CheckCircle2 size={16} /> Entregue</button><button onClick={() => updateDelivery(manifest.id, item.id, "nao_entregue")} title="Marcar como nao entregue">Nao entregue</button></div>}</div></div>)}</div>
+      </article>)}
+    </div>
+  </section>;
 }
 
 function WhatsApp({ api }) {

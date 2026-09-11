@@ -1,5 +1,5 @@
-from datetime import datetime, time
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, Time
+from datetime import date, datetime, time
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -92,6 +92,34 @@ class SaleItem(Base):
     subtotal: Mapped[float] = mapped_column(Float)
     sale = relationship("Sale", back_populates="items")
     product = relationship("Product")
+
+
+class DeliveryManifest(Base, TimestampMixin):
+    __tablename__ = "delivery_manifests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(30), unique=True, index=True)
+    delivery_date: Mapped[date] = mapped_column(Date, index=True)
+    driver_name: Mapped[str] = mapped_column(String(120))
+    vehicle: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="preparacao", index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by = relationship("User")
+    items = relationship("DeliveryManifestItem", cascade="all, delete-orphan", back_populates="manifest", order_by="DeliveryManifestItem.delivery_order")
+
+
+class DeliveryManifestItem(Base, TimestampMixin):
+    __tablename__ = "delivery_manifest_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    manifest_id: Mapped[int] = mapped_column(ForeignKey("delivery_manifests.id"), index=True)
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), index=True)
+    delivery_address: Mapped[str] = mapped_column(String(300))
+    delivery_order: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(30), default="pendente", index=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manifest = relationship("DeliveryManifest", back_populates="items")
+    sale = relationship("Sale")
 
 
 class WhatsAppSettings(Base, TimestampMixin):
