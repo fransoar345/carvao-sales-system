@@ -1,13 +1,18 @@
 import asyncio
 from datetime import date, datetime, time, timedelta
 from io import BytesIO
+from xml.sax.saxutils import escape
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from openpyxl import Workbook
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -428,7 +433,7 @@ def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Sessio
         raise HTTPException(400, "Uma ou mais vendas nao foram encontradas")
 
     manifest = models.DeliveryManifest(
-        code=f"ROM-{datetime.utcnow():%y%m%d%H%M%S%f}",
+        code=f"TMP-{datetime.utcnow():%y%m%d%H%M%S%f}",
         delivery_date=payload.delivery_date,
         driver_name=payload.driver_name,
         vehicle=payload.vehicle,
@@ -445,6 +450,7 @@ def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Sessio
         ))
     db.add(manifest)
     db.flush()
+    manifest.code = f"ROM-{payload.delivery_date:%Y%m%d}-{manifest.id:04d}"
     audit(db, user, "create", "delivery_manifest", manifest.id, f"{manifest.code} com {len(manifest.items)} entregas")
     db.commit()
     return delivery_manifest_to_schema(get_delivery_manifest(db, manifest.id))
@@ -489,6 +495,115 @@ def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.Delive
     audit(db, user, "status", "delivery_manifest_item", item.id, payload.status)
     db.commit()
     return delivery_manifest_to_schema(get_delivery_manifest(db, manifest.id))
+
+
+@app.get("/api/delivery-manifests/{manifest_id}/pdf")
+def delivery_manifest_pdf(manifest_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    manifest = get_delivery_manifest(db, manifest_id)
+    stream = BytesIO()
+    doc = SimpleDocTemplate(
+        stream,
+        pagesize=A4,
+        rightMargin=14 * mm,
+        leftMargin=14 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+        title=f"Romaneio {manifest.code}",
+        author=settings.app_name,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("ManifestTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=colors.HexColor("#17201a"), spaceAfter=3 * mm)
+    subtitle_style = ParagraphStyle("ManifestSubtitle", parent=styles["Normal"], fontSize=9, leading=12, textColor=colors.HexColor("#66756b"))
+    cell_style = ParagraphStyle("ManifestCell", parent=styles["Normal"], fontSize=8, leading=10, textColor=colors.HexColor("#17201a"))
+    cell_bold_style = ParagraphStyle("ManifestCellBold", parent=cell_style, fontName="Helvetica-Bold")
+    small_style = ParagraphStyle("ManifestSmall", parent=styles["Normal"], fontSize=7.5, leading=9, textColor=colors.HexColor("#66756b"))
+    status_labels = {"preparacao": "EM PREPARACAO", "em_rota": "EM ROTA", "concluido": "CONCLUIDO", "cancelado": "CANCELADO", "pendente": "PENDENTE", "entregue": "ENTREGUE", "nao_entregue": "NAO ENTREGUE"}
+
+    story = [
+        Paragraph("CARVAO PRO", subtitle_style),
+        Paragraph("Romaneio de Entregas", title_style),
+        Paragraph(manifest.code, subtitle_style),
+        Spacer(1, 2 * mm),
+    ]
+    details = [
+        [Paragraph("DATA DA ENTREGA", small_style), Paragraph("MOTORISTA", small_style), Paragraph("VEICULO", small_style), Paragraph("STATUS", small_style)],
+        [Paragraph(manifest.delivery_date.strftime("%d/%m/%Y"), cell_bold_style), Paragraph(escape(manifest.driver_name), cell_bold_style), Paragraph(escape(manifest.vehicle or "Nao informado"), cell_style), Paragraph(status_labels.get(manifest.status, manifest.status.upper()), cell_bold_style)],
+    ]
+    details_table = Table(details, colWidths=[34 * mm, 58 * mm, 48 * mm, 37 * mm])
+    details_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4ed")),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#cfd8cd")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#dfe6dd")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.extend([details_table, Spacer(1, 4 * mm)])
+    if manifest.notes:
+        story.extend([Paragraph(f"<b>Observacoes:</b> {escape(manifest.notes)}", cell_style), Spacer(1, 4 * mm)])
+
+    rows = [[
+        Paragraph("ORDEM", small_style),
+        Paragraph("CLIENTE / CONTATO", small_style),
+        Paragraph("ENDERECO", small_style),
+        Paragraph("PRODUTOS", small_style),
+        Paragraph("VALOR", small_style),
+        Paragraph("ENTREGA", small_style),
+    ]]
+    total_value = 0.0
+    for item in manifest.items:
+        sale = item.sale
+        products = "<br/>".join(f"{sale_item.quantity:g}x {escape(sale_item.product.name)}" for sale_item in sale.items)
+        total_value += sale.total_value
+        rows.append([
+            Paragraph(str(item.delivery_order), cell_bold_style),
+            Paragraph(f"<b>{escape(sale.customer_name or f'Venda #{sale.id}')}</b><br/>{escape(sale.customer_phone or 'Sem telefone')}", cell_style),
+            Paragraph(escape(item.delivery_address), cell_style),
+            Paragraph(products, cell_style),
+            Paragraph(f"R$ {sale.total_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), cell_style),
+            Paragraph(status_labels.get(item.status, item.status.upper()), cell_bold_style),
+        ])
+    deliveries_table = Table(rows, colWidths=[17 * mm, 37 * mm, 45 * mm, 35 * mm, 24 * mm, 25 * mm], repeatRows=1)
+    deliveries_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#18231c")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cfd8cd")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f9f6")]),
+    ]))
+    total_label = f"{len(manifest.items)} entrega(s) - Total R$ {total_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    story.extend([deliveries_table, Spacer(1, 4 * mm), Paragraph(f"<b>{total_label}</b>", cell_style), Spacer(1, 14 * mm)])
+    signatures = Table([
+        ["________________________________", "________________________________"],
+        ["Motorista", "Responsavel pela expedicao"],
+    ], colWidths=[85 * mm, 85 * mm])
+    signatures.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica"),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("TEXTCOLOR", (0, 1), (-1, 1), colors.HexColor("#66756b")),
+    ]))
+    story.append(signatures)
+
+    def draw_page_number(pdf_canvas, pdf_doc):
+        pdf_canvas.saveState()
+        pdf_canvas.setFont("Helvetica", 8)
+        pdf_canvas.setFillColor(colors.HexColor("#66756b"))
+        pdf_canvas.drawString(14 * mm, 9 * mm, f"Emitido em {datetime.now():%d/%m/%Y %H:%M}")
+        pdf_canvas.drawRightString(A4[0] - 14 * mm, 9 * mm, f"Pagina {pdf_doc.page}")
+        pdf_canvas.restoreState()
+
+    doc.build(story, onFirstPage=draw_page_number, onLaterPages=draw_page_number)
+    filename = f"romaneio-{manifest.code}.pdf"
+    return Response(stream.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 
 @app.get("/api/dashboard")

@@ -13,6 +13,7 @@ import {
   MapPin,
   PackagePlus,
   Play,
+  Printer,
   ReceiptText,
   Save,
   ShoppingCart,
@@ -96,7 +97,7 @@ function App() {
         {tab === "sale" && <Sales api={api} user={user} />}
         {tab === "products" && <Products api={api} />}
         {tab === "stock" && <Stock api={api} />}
-        {tab === "deliveries" && <Deliveries api={api} />}
+        {tab === "deliveries" && <Deliveries api={api} token={token} />}
         {tab === "sellers" && <Sellers api={api} />}
         {tab === "whatsapp" && <WhatsApp api={api} />}
       </main>
@@ -286,7 +287,7 @@ const deliveryStatus = {
   nao_entregue: "Nao entregue",
 };
 
-function Deliveries({ api }) {
+function Deliveries({ api, token }) {
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({ delivery_date: today, driver_name: "", vehicle: "", notes: "" });
   const [selected, setSelected] = useState({});
@@ -348,6 +349,22 @@ function Deliveries({ api }) {
     }
   }
 
+  async function printManifest(manifest) {
+    setMessage("");
+    const printWindow = window.open("", "_blank");
+    try {
+      const response = await fetch(`${API}/delivery-manifests/${manifest.id}/pdf`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error((await response.json()).detail || "Nao foi possivel gerar o PDF");
+      const url = URL.createObjectURL(await response.blob());
+      if (printWindow) printWindow.location.href = url;
+      else setMessage("O navegador bloqueou a nova guia. Permita pop-ups para imprimir.");
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (error) {
+      if (printWindow) printWindow.close();
+      setMessage(error.message);
+    }
+  }
+
   return <section className="delivery-page">
     <div className="delivery-create">
       <form className="panel form" onSubmit={createManifest}>
@@ -372,7 +389,7 @@ function Deliveries({ api }) {
       <div className="section-title"><div><h2>Romaneios</h2><p>Acompanhe a separacao, rota e confirmacao das entregas.</p></div><button onClick={() => { pendingLoad.reload(); manifestsLoad.reload(); }}>Atualizar</button></div>
       {!manifests.length && <div className="panel empty-state">Nenhum romaneio criado.</div>}
       {manifests.map((manifest) => <article className="panel manifest" key={manifest.id}>
-        <div className="manifest-header"><div><span className={`status status-${manifest.status}`}>{deliveryStatus[manifest.status]}</span><h2>{manifest.code}</h2><p>{new Date(`${manifest.delivery_date}T12:00:00`).toLocaleDateString("pt-BR")} · {manifest.driver_name}{manifest.vehicle ? ` · ${manifest.vehicle}` : ""}</p></div><div className="manifest-actions">{manifest.status === "preparacao" && <button onClick={() => updateManifestStatus(manifest.id, "em_rota")}><Play size={16} /> Iniciar rota</button>}{manifest.status !== "cancelado" && manifest.status !== "concluido" && <button className="danger" onClick={() => updateManifestStatus(manifest.id, "cancelado")}><Ban size={16} /> Cancelar</button>}</div></div>
+        <div className="manifest-header"><div><span className={`status status-${manifest.status}`}>{deliveryStatus[manifest.status]}</span><h2>{manifest.code}</h2><p>{new Date(`${manifest.delivery_date}T12:00:00`).toLocaleDateString("pt-BR")} · {manifest.driver_name}{manifest.vehicle ? ` · ${manifest.vehicle}` : ""}</p></div><div className="manifest-actions"><button onClick={() => printManifest(manifest)}><Printer size={16} /> Imprimir PDF</button>{manifest.status === "preparacao" && <button onClick={() => updateManifestStatus(manifest.id, "em_rota")}><Play size={16} /> Iniciar rota</button>}{manifest.status !== "cancelado" && manifest.status !== "concluido" && <button className="danger" onClick={() => updateManifestStatus(manifest.id, "cancelado")}><Ban size={16} /> Cancelar</button>}</div></div>
         {manifest.notes && <p className="manifest-notes">{manifest.notes}</p>}
         <div className="delivery-items">{manifest.items.map((item) => <div className="delivery-item" key={item.id}><div className="delivery-order">{item.delivery_order}</div><div className="delivery-info"><b>{item.sale.customer_name || `Venda #${item.sale_id}`}</b><span><MapPin size={14} /> {item.delivery_address}</span><small>{item.sale.items.map((saleItem) => `${saleItem.quantity}x ${saleItem.product_name}`).join(", ")} · {money(item.sale.total_value)}</small></div><div className="delivery-result"><span className={`status status-${item.status}`}>{deliveryStatus[item.status]}</span>{manifest.status !== "cancelado" && item.status !== "entregue" && <div><button className="success" onClick={() => updateDelivery(manifest.id, item.id, "entregue")} title="Confirmar entrega"><CheckCircle2 size={16} /> Entregue</button><button onClick={() => updateDelivery(manifest.id, item.id, "nao_entregue")} title="Marcar como nao entregue">Nao entregue</button></div>}</div></div>)}</div>
       </article>)}
