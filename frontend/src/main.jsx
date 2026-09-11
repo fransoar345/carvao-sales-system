@@ -1,0 +1,286 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  BarChart3,
+  Boxes,
+  Download,
+  LogOut,
+  MessageCircle,
+  PackagePlus,
+  ReceiptText,
+  Save,
+  ShoppingCart,
+  Users,
+} from "lucide-react";
+import "./styles.css";
+
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+const money = (v) => Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+function App() {
+  const [token, setToken] = useState(localStorage.getItem("token"));
+  const [user, setUser] = useState(JSON.parse(localStorage.getItem("user") || "null"));
+  const [tab, setTab] = useState("dashboard");
+
+  const api = useMemo(() => ({
+    async call(path, options = {}) {
+      const res = await fetch(`${API}${path}`, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(options.headers || {}),
+        },
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || "Erro na requisicao");
+      return res.json();
+    },
+  }), [token]);
+
+  function onLogin(data) {
+    setToken(data.access_token);
+    setUser(data.user);
+    localStorage.setItem("token", data.access_token);
+    localStorage.setItem("user", JSON.stringify(data.user));
+  }
+
+  function logout() {
+    localStorage.clear();
+    setToken(null);
+    setUser(null);
+  }
+
+  if (!token) return <Login onLogin={onLogin} />;
+
+  const tabs = [
+    ["dashboard", "Dashboard", BarChart3, ["admin", "gerente", "vendedor"]],
+    ["sale", "Venda", ShoppingCart, ["admin", "gerente", "vendedor"]],
+    ["products", "Produtos", Boxes, ["admin", "gerente"]],
+    ["stock", "Estoque", PackagePlus, ["admin", "gerente"]],
+    ["sellers", "Vendedores", Users, ["admin"]],
+    ["whatsapp", "WhatsApp", MessageCircle, ["admin"]],
+  ].filter((item) => item[3].includes(user.role));
+
+  return (
+    <div className="app">
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="mark">C</span>
+          <div><strong>Carvao Pro</strong><small>vendas e estoque</small></div>
+        </div>
+        <nav>
+          {tabs.map(([id, label, Icon]) => (
+            <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)} title={label}>
+              <Icon size={18} /> <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+        <button className="logout" onClick={logout}><LogOut size={18} /> Sair</button>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <h1>{tabs.find((x) => x[0] === tab)?.[1]}</h1>
+            <p>{user.name} · {user.role}</p>
+          </div>
+        </header>
+        {tab === "dashboard" && <Dashboard api={api} token={token} user={user} />}
+        {tab === "sale" && <Sales api={api} user={user} />}
+        {tab === "products" && <Products api={api} />}
+        {tab === "stock" && <Stock api={api} />}
+        {tab === "sellers" && <Sellers api={api} />}
+        {tab === "whatsapp" && <WhatsApp api={api} />}
+      </main>
+    </div>
+  );
+}
+
+function Login({ onLogin }) {
+  const [email, setEmail] = useState("admin@carvao.local");
+  const [password, setPassword] = useState("admin123");
+  const [error, setError] = useState("");
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    const body = new URLSearchParams({ username: email, password });
+    const res = await fetch(`${API}/auth/login`, { method: "POST", body });
+    if (!res.ok) return setError("Credenciais invalidas");
+    onLogin(await res.json());
+  }
+  return (
+    <section className="login">
+      <form onSubmit={submit} className="panel login-card">
+        <span className="mark large">C</span>
+        <h1>Carvao Pro</h1>
+        <label>E-mail<input value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+        <label>Senha<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+        {error && <p className="error">{error}</p>}
+        <button className="primary">Entrar</button>
+        <p className="hint">admin@carvao.local / admin123</p>
+      </form>
+    </section>
+  );
+}
+
+function useLoad(api, loader, deps = []) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const reload = () => loader().then(setData).catch((e) => setError(e.message));
+  useEffect(() => {
+    reload();
+  }, deps);
+  return { data, setData, error, reload };
+}
+
+function Dashboard({ api, token }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [filters, setFilters] = useState({ start: today, end: today, seller_id: "" });
+  const { data, reload } = useLoad(api, () => api.call(`/dashboard?start=${filters.start}&end=${filters.end}${filters.seller_id ? `&seller_id=${filters.seller_id}` : ""}`), [filters]);
+  const sellers = useLoad(api, () => api.call("/sellers"), []).data || [];
+  if (!data) return <Loading />;
+  const coal = data.stock.filter((p) => p.type === "saco_fechado");
+  const packs = data.stock.filter((p) => p.type === "embalagem_vazia");
+  const exportFile = async (kind) => {
+    const res = await fetch(`${API}/reports/export.${kind}`, { headers: { Authorization: `Bearer ${token}` } });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `relatorio-vendas.${kind}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <section className="grid">
+      <div className="toolbar full">
+        <input type="date" value={filters.start} onChange={(e) => setFilters({ ...filters, start: e.target.value })} />
+        <input type="date" value={filters.end} onChange={(e) => setFilters({ ...filters, end: e.target.value })} />
+        <select value={filters.seller_id} onChange={(e) => setFilters({ ...filters, seller_id: e.target.value })}>
+          <option value="">Todos vendedores</option>
+          {sellers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <button onClick={reload}>Atualizar</button>
+        <button onClick={() => exportFile("xlsx")}><Download size={16} /> Excel</button>
+        <button onClick={() => exportFile("pdf")}><Download size={16} /> PDF</button>
+      </div>
+      <Metric label="Vendido no periodo" value={money(data.total_value)} />
+      <Metric label="Vendas confirmadas" value={data.sales_count} />
+      <Metric label="Itens vendidos" value={data.items_quantity} />
+      <Panel title="Sacos fechados">{coal.map((p) => <StockLine key={p.id} p={p} />)}</Panel>
+      <Panel title="Embalagens vazias">{packs.map((p) => <StockLine key={p.id} p={p} />)}</Panel>
+      <Panel title="Ranking de vendedores" className="wide">
+        {data.ranking.map((r, i) => (
+          <div className="rank" key={r.seller_id}><b>#{i + 1} {r.seller_name}</b><span>{Number(r.quantity).toLocaleString("pt-BR")} itens · {money(r.value)} · comissao {money(r.commission)}</span></div>
+        ))}
+      </Panel>
+    </section>
+  );
+}
+
+function Metric({ label, value }) {
+  return <div className="metric"><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function StockLine({ p }) {
+  return <div className={p.low ? "stock low" : "stock"}><span>{p.name}</span><b>{p.current_stock} {p.unit}</b></div>;
+}
+
+function Panel({ title, children, className = "" }) {
+  return <div className={`panel ${className}`}><h2>{title}</h2>{children}</div>;
+}
+
+function Products({ api }) {
+  const empty = { name: "", type: "saco_fechado", unit: "saco", cost_price: 0, sale_price: 0, current_stock: 0, minimum_stock: 0, active: true };
+  const [form, setForm] = useState(empty);
+  const { data: products, reload } = useLoad(api, () => api.call("/products"), []);
+  async function save(e) {
+    e.preventDefault();
+    await api.call(form.id ? `/products/${form.id}` : "/products", { method: form.id ? "PUT" : "POST", body: JSON.stringify(form) });
+    setForm(empty);
+    reload();
+  }
+  return (
+    <CrudLayout form={<ProductForm form={form} setForm={setForm} save={save} />} list={(products || []).map((p) => (
+      <Row key={p.id} title={p.name} meta={`${p.type} · estoque ${p.current_stock} · venda ${money(p.sale_price)}`} onEdit={() => setForm(p)} />
+    ))} />
+  );
+}
+
+function ProductForm({ form, setForm, save }) {
+  return <form className="panel form" onSubmit={save}>
+    <h2>Cadastro de Produto</h2>
+    <input placeholder="Nome do produto" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+    <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}><option value="saco_fechado">Saco fechado de carvao</option><option value="embalagem_vazia">Embalagem vazia</option><option value="outro">Outro</option></select>
+    <input placeholder="Unidade" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} />
+    <input type="number" step="0.01" placeholder="Preco de custo" value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: Number(e.target.value) })} />
+    <input type="number" step="0.01" placeholder="Preco de venda" value={form.sale_price} onChange={(e) => setForm({ ...form, sale_price: Number(e.target.value) })} />
+    <input type="number" step="0.01" placeholder="Estoque inicial" value={form.current_stock} onChange={(e) => setForm({ ...form, current_stock: Number(e.target.value) })} />
+    <input type="number" step="0.01" placeholder="Estoque minimo" value={form.minimum_stock} onChange={(e) => setForm({ ...form, minimum_stock: Number(e.target.value) })} />
+    <button className="primary"><Save size={16} /> Salvar Produto</button>
+  </form>;
+}
+
+function Stock({ api }) {
+  const [form, setForm] = useState({ product_id: "", movement_type: "entrada", quantity: 1, note: "" });
+  const products = useLoad(api, () => api.call("/products"), []).data || [];
+  const { data: movements, reload } = useLoad(api, () => api.call("/stock/movements"), []);
+  async function save(e) {
+    e.preventDefault();
+    await api.call("/stock/movements", { method: "POST", body: JSON.stringify({ ...form, product_id: Number(form.product_id) }) });
+    reload();
+  }
+  return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>Entrada/Saida de Estoque</h2><select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required><option value="">Produto</option>{products.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.current_stock}</option>)}</select><select value={form.movement_type} onChange={(e) => setForm({ ...form, movement_type: e.target.value })}><option value="entrada">Entrada</option><option value="saida">Saida</option><option value="ajuste">Ajuste positivo</option><option value="devolucao">Devolucao</option></select><input type="number" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} /><textarea placeholder="Observacao" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /><button className="primary">Registrar Movimentacao</button></form>} list={(movements || []).map((m) => <Row key={m.id} title={`${m.product_name} · ${m.movement_type}`} meta={`${m.quantity} em ${new Date(m.occurred_at).toLocaleString("pt-BR")} · ${m.note || ""}`} />)} />;
+}
+
+function Sellers({ api }) {
+  const empty = { name: "", phone: "+55", monthly_goal: 0, commission_percent: 0, email: "", temporary_password: "vendedor123" };
+  const [form, setForm] = useState(empty);
+  const { data: sellers, reload } = useLoad(api, () => api.call("/sellers"), []);
+  async function save(e) {
+    e.preventDefault();
+    await api.call("/sellers", { method: "POST", body: JSON.stringify(form) });
+    setForm(empty);
+    reload();
+  }
+  return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>Cadastro de Vendedor</h2>{["name", "phone", "email", "temporary_password"].map((k) => <input key={k} placeholder={k} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} required />)}<input type="number" step="0.01" placeholder="Meta mensal" value={form.monthly_goal} onChange={(e) => setForm({ ...form, monthly_goal: Number(e.target.value) })} /><input type="number" step="0.01" placeholder="Comissao %" value={form.commission_percent} onChange={(e) => setForm({ ...form, commission_percent: Number(e.target.value) })} /><button className="primary">Salvar Vendedor</button></form>} list={(sellers || []).map((s) => <Row key={s.id} title={s.name} meta={`${s.phone} · ${s.email} · ${s.active ? "ativo" : "inativo"}`} />)} />;
+}
+
+function Sales({ api, user }) {
+  const [form, setForm] = useState({ seller_id: "", product_id: "", quantity: 1, payment_method: "pix", customer_name: "", customer_phone: "" });
+  const products = useLoad(api, () => api.call("/products"), []).data || [];
+  const sellers = useLoad(api, () => api.call("/sellers"), []).data || [];
+  const { data: sales, reload } = useLoad(api, () => api.call("/sales"), []);
+  const product = products.find((p) => p.id === Number(form.product_id));
+  const total = product ? product.sale_price * form.quantity : 0;
+  async function save(e) {
+    e.preventDefault();
+    await api.call("/sales", { method: "POST", body: JSON.stringify({ seller_id: form.seller_id ? Number(form.seller_id) : undefined, customer_name: form.customer_name, customer_phone: form.customer_phone, payment_method: form.payment_method, items: [{ product_id: Number(form.product_id), quantity: Number(form.quantity) }] }) });
+    reload();
+  }
+  return <CrudLayout form={<form className="panel form sale-form" onSubmit={save}><h2>Lancar Venda</h2>{user.role !== "vendedor" && <select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value })} required><option value="">Vendedor</option>{sellers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>}<select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required><option value="">Produto</option>{products.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name} · {money(p.sale_price)} · estoque {p.current_stock}</option>)}</select><input type="number" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} /><strong className="total">{money(total)}</strong><select value={form.payment_method} onChange={(e) => setForm({ ...form, payment_method: e.target.value })}><option value="dinheiro">Dinheiro</option><option value="pix">Pix</option><option value="cartao">Cartao</option><option value="prazo">A prazo</option></select><input placeholder="Cliente" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} /><input placeholder="Telefone do cliente" value={form.customer_phone} onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} /><button className="primary big"><ReceiptText size={18} /> Confirmar Venda</button></form>} list={(sales || []).map((s) => <Row key={s.id} title={`${s.seller_name} · ${money(s.total_value)}`} meta={`${new Date(s.occurred_at).toLocaleString("pt-BR")} · ${s.payment_method} · ${s.items.map((i) => `${i.quantity}x ${i.product_name}`).join(", ")}`} />)} />;
+}
+
+function WhatsApp({ api }) {
+  const { data, setData } = useLoad(api, () => api.call("/whatsapp/settings"), []);
+  if (!data) return <Loading />;
+  async function save(e) {
+    e.preventDefault();
+    const saved = await api.call("/whatsapp/settings", { method: "PUT", body: JSON.stringify(data) });
+    setData(saved);
+  }
+  return <form className="panel form max" onSubmit={save}><h2>Configuracoes de WhatsApp</h2><select value={data.provider} onChange={(e) => setData({ ...data, provider: e.target.value })}><option value="mock">Mock</option><option value="meta">Meta Cloud API</option><option value="zapi">Z-API</option><option value="twilio">Twilio</option></select><input placeholder="URL da API" value={data.api_url || ""} onChange={(e) => setData({ ...data, api_url: e.target.value })} /><input placeholder="Token da API" value={data.token || ""} onChange={(e) => setData({ ...data, token: e.target.value })} /><input placeholder="WhatsApp do gestor" value={data.manager_phone} onChange={(e) => setData({ ...data, manager_phone: e.target.value })} /><label className="check"><input type="checkbox" checked={data.sale_notifications} onChange={(e) => setData({ ...data, sale_notifications: e.target.checked })} /> notificacao por venda</label><label className="check"><input type="checkbox" checked={data.low_stock_alerts} onChange={(e) => setData({ ...data, low_stock_alerts: e.target.checked })} /> alerta de estoque baixo</label><label className="check"><input type="checkbox" checked={data.daily_summary} onChange={(e) => setData({ ...data, daily_summary: e.target.checked })} /> resumo diario</label><input type="time" value={data.daily_summary_time?.slice(0, 5)} onChange={(e) => setData({ ...data, daily_summary_time: e.target.value })} /><button className="primary">Salvar Configuracoes</button></form>;
+}
+
+function CrudLayout({ form, list }) {
+  return <section className="crud">{form}<div className="panel list"><h2>Registros</h2>{list}</div></section>;
+}
+
+function Row({ title, meta, onEdit }) {
+  return <div className="row"><div><strong>{title}</strong><span>{meta}</span></div>{onEdit && <button onClick={onEdit}>Editar</button>}</div>;
+}
+
+function Loading() {
+  return <div className="panel">Carregando...</div>;
+}
+
+createRoot(document.getElementById("root")).render(<App />);
