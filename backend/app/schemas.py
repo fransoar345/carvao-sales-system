@@ -121,6 +121,15 @@ class SaleCreate(BaseModel):
     items: list[SaleItemCreate]
 
 
+class SaleUpdate(BaseModel):
+    seller_id: int
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    payment_method: str
+    total_value: float | None = None
+    items: list[SaleItemCreate] = Field(min_length=1)
+
+
 class SaleItemOut(BaseModel):
     id: int
     product_id: int

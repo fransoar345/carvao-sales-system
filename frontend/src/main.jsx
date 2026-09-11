@@ -263,7 +263,10 @@ function Sellers({ api }) {
 }
 
 function Sales({ api, user }) {
-  const [form, setForm] = useState({ seller_id: "", product_id: "", quantity: 1, payment_method: "pix", customer_name: "", customer_phone: "" });
+  const emptySale = { seller_id: "", product_id: "", quantity: 1, payment_method: "pix", customer_name: "", customer_phone: "" };
+  const [form, setForm] = useState(emptySale);
+  const [editingId, setEditingId] = useState(null);
+  const [message, setMessage] = useState("");
   const products = useLoad(api, () => api.call("/products"), []).data || [];
   const sellers = useLoad(api, () => api.call("/sellers"), []).data || [];
   const { data: sales, reload } = useLoad(api, () => api.call("/sales"), []);
@@ -271,10 +274,46 @@ function Sales({ api, user }) {
   const total = product ? product.sale_price * form.quantity : 0;
   async function save(e) {
     e.preventDefault();
-    await api.call("/sales", { method: "POST", body: JSON.stringify({ seller_id: form.seller_id ? Number(form.seller_id) : undefined, customer_name: form.customer_name, customer_phone: form.customer_phone, payment_method: form.payment_method, items: [{ product_id: Number(form.product_id), quantity: Number(form.quantity) }] }) });
-    reload();
+    setMessage("");
+    const payload = { seller_id: form.seller_id ? Number(form.seller_id) : undefined, customer_name: form.customer_name, customer_phone: form.customer_phone, payment_method: form.payment_method, items: [{ product_id: Number(form.product_id), quantity: Number(form.quantity) }] };
+    try {
+      await api.call(editingId ? `/sales/${editingId}` : "/sales", { method: editingId ? "PUT" : "POST", body: JSON.stringify(payload) });
+      setMessage(editingId ? "Venda alterada e estoque recalculado." : "Venda registrada com sucesso.");
+      setEditingId(null);
+      setForm(emptySale);
+      reload();
+    } catch (error) {
+      setMessage(error.message);
+    }
   }
-  return <CrudLayout form={<form className="panel form sale-form" onSubmit={save}><h2>Lancar Venda</h2>{user.role !== "vendedor" && <select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value })} required><option value="">Vendedor</option>{sellers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>}<select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required><option value="">Produto</option>{products.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name} · {money(p.sale_price)} · estoque {p.current_stock}</option>)}</select><input type="number" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} /><strong className="total">{money(total)}</strong><select value={form.payment_method} onChange={(e) => setForm({ ...form, payment_method: e.target.value })}><option value="dinheiro">Dinheiro</option><option value="pix">Pix</option><option value="cartao">Cartao</option><option value="prazo">A prazo</option></select><input placeholder="Cliente" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} /><input placeholder="Telefone do cliente" value={form.customer_phone} onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} /><button className="primary big"><ReceiptText size={18} /> Confirmar Venda</button></form>} list={(sales || []).map((s) => <Row key={s.id} title={`${s.seller_name} · ${money(s.total_value)}`} meta={`${new Date(s.occurred_at).toLocaleString("pt-BR")} · ${s.payment_method} · ${s.items.map((i) => `${i.quantity}x ${i.product_name}`).join(", ")}`} />)} />;
+  function startEdit(sale) {
+    if (sale.items.length !== 1) return setMessage("Esta venda possui varios produtos e nao pode ser editada por este formulario.");
+    const item = sale.items[0];
+    setEditingId(sale.id);
+    setForm({ seller_id: String(sale.seller_id), product_id: String(item.product_id), quantity: item.quantity, payment_method: sale.payment_method, customer_name: sale.customer_name || "", customer_phone: sale.customer_phone || "" });
+    setMessage(`Editando venda #${sale.id}.`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  function cancelEdit() {
+    setEditingId(null);
+    setForm(emptySale);
+    setMessage("");
+  }
+  async function removeSale(sale) {
+    if (!window.confirm(`Excluir a venda #${sale.id}? Os produtos serao devolvidos ao estoque.`)) return;
+    try {
+      await api.call(`/sales/${sale.id}`, { method: "DELETE" });
+      if (editingId === sale.id) cancelEdit();
+      setMessage("Venda cancelada e produtos devolvidos ao estoque.");
+      reload();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }
+  const canManage = user.role === "admin" || user.role === "gerente";
+  const formPanel = <form className="panel form sale-form" onSubmit={save}><h2>{editingId ? `Alterar venda #${editingId}` : "Lancar Venda"}</h2>{editingId && <p className="edit-banner">Ao salvar, o estoque anterior sera devolvido e a nova quantidade sera baixada.</p>}{user.role !== "vendedor" && <label className="field"><span>Vendedor</span><select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value })} required><option value="">Selecione</option>{sellers.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}<label className="field"><span>Produto</span><select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required><option value="">Selecione</option>{products.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name} · {money(p.sale_price)} · estoque {p.current_stock}</option>)}</select></label><label className="field"><span>Quantidade</span><input type="number" min="0.01" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} required /></label><div className="total"><small>Total da venda</small><strong>{money(total)}</strong></div><label className="field"><span>Forma de pagamento</span><select value={form.payment_method} onChange={(e) => setForm({ ...form, payment_method: e.target.value })}><option value="dinheiro">Dinheiro</option><option value="pix">Pix</option><option value="cartao">Cartao</option><option value="prazo">A prazo</option></select></label><label className="field"><span>Cliente</span><input placeholder="Nome do cliente" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} /></label><label className="field"><span>Telefone do cliente</span><input placeholder="Ex.: +5563999999999" value={form.customer_phone} onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} /></label><button className="primary big"><ReceiptText size={18} /> {editingId ? "Salvar alteracoes" : "Confirmar Venda"}</button>{editingId && <button type="button" onClick={cancelEdit}>Cancelar edicao</button>}{message && <p className="form-status">{message}</p>}</form>;
+  const saleList = (sales || []).map((sale) => <Row key={sale.id} title={`${sale.seller_name} · ${money(sale.total_value)}`} meta={`#${sale.id} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.payment_method} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")} · ${sale.status}`} onEdit={canManage && sale.status === "confirmada" ? () => startEdit(sale) : null} actions={canManage && sale.status === "confirmada" ? <button className="danger" onClick={() => removeSale(sale)}><Trash2 size={16} /> Excluir</button> : null} />);
+  return <CrudLayout form={formPanel} list={saleList} />;
 }
 
 const deliveryStatus = {

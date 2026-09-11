@@ -147,6 +147,17 @@ def delivery_manifest_to_schema(manifest: models.DeliveryManifest) -> schemas.De
     )
 
 
+def ensure_sale_not_in_active_manifest(db: Session, sale_id: int) -> None:
+    assigned = (
+        db.query(models.DeliveryManifestItem)
+        .join(models.DeliveryManifest)
+        .filter(models.DeliveryManifestItem.sale_id == sale_id, models.DeliveryManifest.status != "cancelado")
+        .first()
+    )
+    if assigned:
+        raise HTTPException(400, "Cancele o romaneio ativo antes de alterar esta venda")
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "app": settings.app_name}
@@ -390,6 +401,73 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
     for product in touched_products:
         await notify_low_stock(db, product)
     return sale_to_schema(sale)
+
+
+@app.put("/api/sales/{sale_id}", response_model=schemas.SaleOut)
+def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    sale = db.query(models.Sale).options(joinedload(models.Sale.items).joinedload(models.SaleItem.product)).filter(models.Sale.id == sale_id).first()
+    if not sale:
+        raise HTTPException(404, "Venda nao encontrada")
+    if sale.status != "confirmada":
+        raise HTTPException(400, "Somente vendas confirmadas podem ser alteradas")
+    ensure_sale_not_in_active_manifest(db, sale.id)
+    seller = db.get(models.Seller, payload.seller_id)
+    if not seller or not seller.active:
+        raise HTTPException(404, "Vendedor nao encontrado")
+
+    restored_by_product: dict[int, float] = {}
+    for old_item in sale.items:
+        restored_by_product[old_item.product_id] = restored_by_product.get(old_item.product_id, 0) + old_item.quantity
+    requested_by_product: dict[int, float] = {}
+    for new_item in payload.items:
+        requested_by_product[new_item.product_id] = requested_by_product.get(new_item.product_id, 0) + new_item.quantity
+    products = {product.id: product for product in db.query(models.Product).filter(models.Product.id.in_(list(requested_by_product))).all()}
+    if len(products) != len(requested_by_product) or any(not product.active for product in products.values()):
+        raise HTTPException(404, "Um ou mais produtos estao indisponiveis")
+    for product_id, quantity in requested_by_product.items():
+        available = products[product_id].current_stock + restored_by_product.get(product_id, 0)
+        if available < quantity:
+            raise HTTPException(400, f"Estoque insuficiente para {products[product_id].name}")
+
+    for old_item in list(sale.items):
+        old_item.product.current_stock += old_item.quantity
+        db.add(models.StockMovement(product_id=old_item.product_id, movement_type="devolucao", quantity=old_item.quantity, responsible_id=user.id, note=f"Estorno para edicao da venda #{sale.id}"))
+    sale.items.clear()
+    total = 0.0
+    for new_item in payload.items:
+        product = products[new_item.product_id]
+        unit_price = new_item.unit_price if new_item.unit_price is not None else product.sale_price
+        subtotal = new_item.quantity * unit_price
+        product.current_stock -= new_item.quantity
+        total += subtotal
+        sale.items.append(models.SaleItem(product_id=product.id, quantity=new_item.quantity, unit_price=unit_price, subtotal=subtotal))
+        db.add(models.StockMovement(product_id=product.id, movement_type="saida", quantity=new_item.quantity, responsible_id=user.id, note=f"Baixa por edicao da venda #{sale.id}"))
+    sale.seller_id = payload.seller_id
+    sale.customer_name = payload.customer_name
+    sale.customer_phone = payload.customer_phone
+    sale.payment_method = payload.payment_method
+    sale.total_value = payload.total_value if payload.total_value is not None else total
+    audit(db, user, "update", "sale", sale.id, f"Venda alterada para R$ {sale.total_value:.2f}")
+    db.commit()
+    updated = db.query(models.Sale).options(joinedload(models.Sale.seller), joinedload(models.Sale.items).joinedload(models.SaleItem.product)).filter(models.Sale.id == sale.id).first()
+    return sale_to_schema(updated)
+
+
+@app.delete("/api/sales/{sale_id}")
+def delete_sale(sale_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    sale = db.query(models.Sale).options(joinedload(models.Sale.items).joinedload(models.SaleItem.product)).filter(models.Sale.id == sale_id).first()
+    if not sale:
+        raise HTTPException(404, "Venda nao encontrada")
+    if sale.status != "confirmada":
+        raise HTTPException(400, "Venda ja cancelada")
+    ensure_sale_not_in_active_manifest(db, sale.id)
+    for item in sale.items:
+        item.product.current_stock += item.quantity
+        db.add(models.StockMovement(product_id=item.product_id, movement_type="devolucao", quantity=item.quantity, responsible_id=user.id, note=f"Cancelamento da venda #{sale.id}"))
+    sale.status = "cancelada"
+    audit(db, user, "cancel", "sale", sale.id, f"Venda cancelada e estoque devolvido: R$ {sale.total_value:.2f}")
+    db.commit()
+    return {"ok": True, "status": sale.status}
 
 
 @app.get("/api/delivery-manifests/pending-sales", response_model=list[schemas.SaleOut])

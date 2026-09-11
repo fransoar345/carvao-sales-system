@@ -80,7 +80,10 @@ input, select, textarea { width: 100%; border: 1px solid #cfd8cd; border-radius:
 textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
 .primary { min-height: 46px; border-radius: 8px; background: #ffbf47; color: #1d1d15; font-weight: 800; display: inline-flex; justify-content: center; align-items: center; gap: 8px; padding: 0 14px; }
 .primary.big { min-height: 56px; font-size: 17px; }
-.total { background: #eef4ed; border-radius: 8px; min-height: 46px; display: grid; place-items: center; font-size: 22px; }
+.total { background: #eef4ed; border-radius: 8px; min-height: 58px; display: grid; place-items: center; align-content: center; gap: 2px; }
+.total small { color: #66756b; font-size: 12px; }
+.total strong { font-size: 22px; }
+.edit-banner { padding: 10px 12px; border-left: 3px solid #ffbf47; background: #fff8e8; color: #62420b; font-size: 13px; }
 .list { min-height: 180px; }
 .check { display: flex; align-items: center; gap: 10px; color: #39483e; }
 .check input { width: 18px; min-height: 18px; }
