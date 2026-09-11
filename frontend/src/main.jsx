@@ -210,13 +210,13 @@ function Products({ api }) {
 function ProductForm({ form, setForm, save }) {
   return <form className="panel form" onSubmit={save}>
     <h2>Cadastro de Produto</h2>
-    <input placeholder="Nome do produto" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-    <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}><option value="saco_fechado">Saco fechado de carvao</option><option value="embalagem_vazia">Embalagem vazia</option><option value="outro">Outro</option></select>
-    <input placeholder="Unidade" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} />
-    <input type="number" step="0.01" placeholder="Preco de custo" value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: Number(e.target.value) })} />
-    <input type="number" step="0.01" placeholder="Preco de venda" value={form.sale_price} onChange={(e) => setForm({ ...form, sale_price: Number(e.target.value) })} />
-    <input type="number" step="0.01" placeholder="Estoque inicial" value={form.current_stock} onChange={(e) => setForm({ ...form, current_stock: Number(e.target.value) })} />
-    <input type="number" step="0.01" placeholder="Estoque minimo" value={form.minimum_stock} onChange={(e) => setForm({ ...form, minimum_stock: Number(e.target.value) })} />
+    <label className="field"><span>Nome do produto</span><input placeholder="Ex.: Carvao Premium 5 kg" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
+    <label className="field"><span>Tipo do produto</span><select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}><option value="saco_fechado">Saco fechado de carvao</option><option value="embalagem_vazia">Embalagem vazia</option><option value="outro">Outro</option></select></label>
+    <label className="field"><span>Unidade de contagem</span><input placeholder="Ex.: saco, unidade ou kg" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} /></label>
+    <label className="field"><span>Preco de custo (R$)</span><input type="number" min="0" step="0.01" value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: Number(e.target.value) })} /></label>
+    <label className="field"><span>Preco de venda (R$)</span><input type="number" min="0" step="0.01" value={form.sale_price} onChange={(e) => setForm({ ...form, sale_price: Number(e.target.value) })} /></label>
+    <label className="field"><span>Quantidade inicial no estoque</span><input type="number" min="0" step="0.01" value={form.current_stock} onChange={(e) => setForm({ ...form, current_stock: Number(e.target.value) })} /></label>
+    <label className="field"><span>Quantidade minima para alerta</span><input type="number" min="0" step="0.01" value={form.minimum_stock} onChange={(e) => setForm({ ...form, minimum_stock: Number(e.target.value) })} /></label>
     <button className="primary"><Save size={16} /> Salvar Produto</button>
   </form>;
 }

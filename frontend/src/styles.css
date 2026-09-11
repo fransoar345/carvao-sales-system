@@ -42,6 +42,8 @@ header p, .hint { color: #66756b; margin-top: 4px; }
 .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .form { display: grid; gap: 11px; }
 .form.max { max-width: 620px; }
+.field { display: grid; gap: 6px; color: #36483c; font-size: 14px; font-weight: 700; }
+.field input, .field select { font-weight: 400; }
 input, select, textarea { width: 100%; border: 1px solid #cfd8cd; border-radius: 8px; min-height: 44px; padding: 0 12px; background: #fbfcfa; color: #17201a; }
 textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
 .primary { min-height: 46px; border-radius: 8px; background: #ffbf47; color: #1d1d15; font-weight: 800; display: inline-flex; justify-content: center; align-items: center; gap: 8px; padding: 0 14px; }
