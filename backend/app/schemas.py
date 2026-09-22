@@ -1,5 +1,6 @@
 from datetime import date, datetime, time
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Token(BaseModel):
@@ -51,6 +52,75 @@ class ProductOut(ProductBase):
 
     class Config:
         from_attributes = True
+
+
+class PriceTableItemIn(BaseModel):
+    product_id: int
+    price: float = Field(ge=0)
+
+
+class PriceTableItemOut(PriceTableItemIn):
+    product_name: str
+
+
+class PriceTableCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    description: str | None = None
+    is_default: bool = False
+    active: bool = True
+    items: list[PriceTableItemIn] = Field(min_length=1)
+
+
+class PriceTableUpdate(PriceTableCreate):
+    pass
+
+
+class PriceTableOut(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    is_default: bool
+    active: bool
+    items: list[PriceTableItemOut]
+
+
+class CustomerBase(BaseModel):
+    cnpj: str
+    legal_name: str = Field(min_length=2, max_length=180)
+    state_registration: str = Field(min_length=1, max_length=40)
+    address: str = Field(min_length=3, max_length=300)
+    reference_point: str = Field(min_length=2, max_length=200)
+    phone: str | None = None
+    email: str | None = None
+    price_table_id: int | None = None
+    active: bool = True
+
+    @field_validator("cnpj")
+    @classmethod
+    def normalize_cnpj(cls, value: str) -> str:
+        digits = re.sub(r"\D", "", value)
+        if len(digits) != 14:
+            raise ValueError("CNPJ deve conter 14 digitos")
+        return digits
+
+    @model_validator(mode="after")
+    def require_contact(self):
+        if not (self.phone and self.phone.strip()) and not (self.email and self.email.strip()):
+            raise ValueError("Informe telefone ou e-mail")
+        return self
+
+
+class CustomerCreate(CustomerBase):
+    pass
+
+
+class CustomerUpdate(CustomerBase):
+    pass
+
+
+class CustomerOut(CustomerBase):
+    id: int
+    price_table_name: str | None = None
 
 
 class MovementCreate(BaseModel):
@@ -114,6 +184,7 @@ class SaleItemCreate(BaseModel):
 
 class SaleCreate(BaseModel):
     seller_id: int | None = None
+    customer_id: int | None = None
     customer_name: str | None = None
     customer_phone: str | None = None
     payment_method: str
@@ -123,6 +194,7 @@ class SaleCreate(BaseModel):
 
 class SaleUpdate(BaseModel):
     seller_id: int
+    customer_id: int | None = None
     customer_name: str | None = None
     customer_phone: str | None = None
     payment_method: str
@@ -145,6 +217,9 @@ class SaleOut(BaseModel):
     seller_name: str
     customer_name: str | None
     customer_phone: str | None
+    customer_id: int | None = None
+    customer_cnpj: str | None = None
+    price_table_name: str | None = None
     occurred_at: datetime
     total_value: float
     payment_method: str

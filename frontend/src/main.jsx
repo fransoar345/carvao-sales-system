@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BarChart3,
+  Building2,
   Ban,
   Boxes,
   CheckCircle2,
@@ -18,6 +19,8 @@ import {
   Save,
   ShoppingCart,
   Truck,
+  Tags,
+  UserPlus,
   Users,
 } from "lucide-react";
 import "./styles.css";
@@ -63,6 +66,8 @@ function App() {
   const tabs = [
     ["dashboard", "Dashboard", BarChart3, ["admin", "gerente", "vendedor"]],
     ["sale", "Venda", ShoppingCart, ["admin", "gerente", "vendedor"]],
+    ["customers", "Clientes", Building2, ["admin", "gerente"]],
+    ["prices", "Tabelas", Tags, ["admin", "gerente"]],
     ["products", "Produtos", Boxes, ["admin", "gerente"]],
     ["stock", "Estoque", PackagePlus, ["admin", "gerente"]],
     ["deliveries", "Romaneios", ClipboardList, ["admin", "gerente"]],
@@ -95,6 +100,8 @@ function App() {
         </header>
         {tab === "dashboard" && <Dashboard api={api} token={token} user={user} />}
         {tab === "sale" && <Sales api={api} user={user} />}
+        {tab === "customers" && <Customers api={api} />}
+        {tab === "prices" && <PriceTables api={api} />}
         {tab === "products" && <Products api={api} />}
         {tab === "stock" && <Stock api={api} />}
         {tab === "deliveries" && <Deliveries api={api} token={token} />}
@@ -262,20 +269,62 @@ function Sellers({ api }) {
   return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>Cadastro de Vendedor</h2><label className="field"><span>Nome do vendedor</span><input placeholder="Ex.: Maria Silva" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label><label className="field"><span>Telefone / WhatsApp</span><input placeholder="Ex.: +5563999999999" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} required /></label><label className="field"><span>E-mail de acesso</span><input type="email" placeholder="Ex.: maria@empresa.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required /></label><label className="field"><span>Senha inicial</span><input type="text" placeholder="Minimo de 6 caracteres" value={form.temporary_password} onChange={(e) => setForm({ ...form, temporary_password: e.target.value })} minLength={6} required /></label><label className="field"><span>Meta mensal de vendas (R$)</span><input type="number" min="0" step="0.01" value={form.monthly_goal} onChange={(e) => setForm({ ...form, monthly_goal: Number(e.target.value) })} /></label><label className="field"><span>Comissao sobre vendas (%)</span><input type="number" min="0" max="100" step="0.01" value={form.commission_percent} onChange={(e) => setForm({ ...form, commission_percent: Number(e.target.value) })} /></label><button className="primary"><Save size={16} /> Salvar Vendedor</button></form>} list={(sellers || []).map((s) => <Row key={s.id} title={s.name} meta={`${s.phone} · ${s.email} · ${s.active ? "ativo" : "inativo"}`} actions={<button className="danger" onClick={() => removeSeller(s)}><Trash2 size={16} /> Excluir</button>} />)} />;
 }
 
+const emptyCustomer = { cnpj: "", legal_name: "", state_registration: "", address: "", reference_point: "", phone: "", email: "", price_table_id: "", active: true };
+
+function CustomerFields({ form, setForm, tables, compact = false }) {
+  return <div className={compact ? "customer-fields compact" : "customer-fields"}>
+    <label className="field"><span>CNPJ</span><input value={form.cnpj} onChange={(e) => setForm({ ...form, cnpj: e.target.value })} placeholder="00.000.000/0000-00" required /></label>
+    <label className="field"><span>Razao Social</span><input value={form.legal_name} onChange={(e) => setForm({ ...form, legal_name: e.target.value })} required /></label>
+    <label className="field"><span>Inscricao Estadual</span><input value={form.state_registration} onChange={(e) => setForm({ ...form, state_registration: e.target.value })} required /></label>
+    <label className="field"><span>Endereco completo</span><input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} required /></label>
+    <label className="field"><span>Ponto de referencia</span><input value={form.reference_point} onChange={(e) => setForm({ ...form, reference_point: e.target.value })} required /></label>
+    <label className="field"><span>Telefone</span><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="Telefone ou WhatsApp" /></label>
+    <label className="field"><span>E-mail</span><input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></label>
+    <label className="field"><span>Tabela de precos</span><select value={form.price_table_id || ""} onChange={(e) => setForm({ ...form, price_table_id: e.target.value })}><option value="">Tabela padrao</option>{tables.filter((t) => t.active).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
+  </div>;
+}
+
+function Customers({ api }) {
+  const [form, setForm] = useState(emptyCustomer);
+  const [message, setMessage] = useState("");
+  const customersLoad = useLoad(api, () => api.call("/customers"), []);
+  const tables = useLoad(api, () => api.call("/price-tables"), []).data || [];
+  async function save(e) { e.preventDefault(); setMessage(""); try { const payload = { ...form, price_table_id: form.price_table_id ? Number(form.price_table_id) : null }; await api.call(form.id ? `/customers/${form.id}` : "/customers", { method: form.id ? "PUT" : "POST", body: JSON.stringify(payload) }); setForm(emptyCustomer); customersLoad.reload(); setMessage("Cliente salvo com sucesso."); } catch (error) { setMessage(error.message); } }
+  const list = (customersLoad.data || []).map((c) => <Row key={c.id} title={c.legal_name} meta={`CNPJ ${c.cnpj} · ${c.price_table_name || "Tabela padrao"} · ${c.phone || c.email}`} onEdit={() => setForm({ ...c, price_table_id: c.price_table_id || "" })} />);
+  return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>{form.id ? "Alterar cliente" : "Cadastro de cliente"}</h2><CustomerFields form={form} setForm={setForm} tables={tables} /><button className="primary"><Save size={16} /> Salvar cliente</button>{message && <p className="form-status">{message}</p>}</form>} list={list} />;
+}
+
+function PriceTables({ api }) {
+  const [form, setForm] = useState({ name: "", description: "", is_default: false, active: true, prices: {} });
+  const [message, setMessage] = useState("");
+  const products = useLoad(api, () => api.call("/products"), []).data || [];
+  const tablesLoad = useLoad(api, () => api.call("/price-tables"), []);
+  function edit(row) { setForm({ id: row.id, name: row.name, description: row.description || "", is_default: row.is_default, active: row.active, prices: Object.fromEntries(row.items.map((i) => [i.product_id, i.price])) }); }
+  async function save(e) { e.preventDefault(); setMessage(""); const payload = { name: form.name, description: form.description, is_default: form.is_default, active: form.active, items: products.filter((p) => p.active).map((p) => ({ product_id: p.id, price: Number(form.prices[p.id] ?? p.sale_price) })) }; try { await api.call(form.id ? `/price-tables/${form.id}` : "/price-tables", { method: form.id ? "PUT" : "POST", body: JSON.stringify(payload) }); setForm({ name: "", description: "", is_default: false, active: true, prices: {} }); tablesLoad.reload(); setMessage("Tabela salva com sucesso."); } catch (error) { setMessage(error.message); } }
+  return <CrudLayout form={<form className="panel form" onSubmit={save}><h2>{form.id ? "Alterar tabela" : "Nova tabela de precos"}</h2><label className="field"><span>Nome da tabela</span><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Ex.: Com nota fiscal" required /></label><label className="field"><span>Descricao</span><textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label><label className="check"><input type="checkbox" checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} /> Usar como tabela padrao</label><div className="price-grid">{products.filter((p) => p.active).map((p) => <label className="field" key={p.id}><span>{p.name} (R$)</span><input type="number" min="0" step="0.01" value={form.prices[p.id] ?? p.sale_price} onChange={(e) => setForm({ ...form, prices: { ...form.prices, [p.id]: e.target.value } })} required /></label>)}</div><button className="primary"><Save size={16} /> Salvar tabela</button>{message && <p className="form-status">{message}</p>}</form>} list={(tablesLoad.data || []).map((t) => <Row key={t.id} title={t.name} meta={`${t.items.length} produtos · ${t.is_default ? "padrao" : "personalizada"} · ${t.active ? "ativa" : "inativa"}`} onEdit={() => edit(t)} />)} />;
+}
+
 function Sales({ api, user }) {
-  const emptySale = { seller_id: "", product_id: "", quantity: 1, payment_method: "pix", customer_name: "", customer_phone: "" };
+  const emptySale = { seller_id: "", customer_id: "", product_id: "", quantity: 1, payment_method: "pix" };
   const [form, setForm] = useState(emptySale);
   const [editingId, setEditingId] = useState(null);
   const [message, setMessage] = useState("");
   const products = useLoad(api, () => api.call("/products"), []).data || [];
   const sellers = useLoad(api, () => api.call("/sellers"), []).data || [];
+  const customersLoad = useLoad(api, () => api.call("/customers"), []);
+  const tables = useLoad(api, () => api.call("/price-tables"), []).data || [];
+  const [showCustomer, setShowCustomer] = useState(false);
+  const [customerForm, setCustomerForm] = useState(emptyCustomer);
   const { data: sales, reload } = useLoad(api, () => api.call("/sales"), []);
   const product = products.find((p) => p.id === Number(form.product_id));
-  const total = product ? product.sale_price * form.quantity : 0;
+  const customer = (customersLoad.data || []).find((c) => c.id === Number(form.customer_id));
+  const priceTable = tables.find((t) => t.id === (customer?.price_table_id || tables.find((x) => x.is_default)?.id));
+  const unitPrice = priceTable?.items.find((i) => i.product_id === Number(form.product_id))?.price;
+  const total = unitPrice != null ? unitPrice * form.quantity : 0;
   async function save(e) {
     e.preventDefault();
     setMessage("");
-    const payload = { seller_id: form.seller_id ? Number(form.seller_id) : undefined, customer_name: form.customer_name, customer_phone: form.customer_phone, payment_method: form.payment_method, items: [{ product_id: Number(form.product_id), quantity: Number(form.quantity) }] };
+    const payload = { seller_id: form.seller_id ? Number(form.seller_id) : undefined, customer_id: Number(form.customer_id), payment_method: form.payment_method, items: [{ product_id: Number(form.product_id), quantity: Number(form.quantity) }] };
     try {
       await api.call(editingId ? `/sales/${editingId}` : "/sales", { method: editingId ? "PUT" : "POST", body: JSON.stringify(payload) });
       setMessage(editingId ? "Venda alterada e estoque recalculado." : "Venda registrada com sucesso.");
@@ -290,7 +339,7 @@ function Sales({ api, user }) {
     if (sale.items.length !== 1) return setMessage("Esta venda possui varios produtos e nao pode ser editada por este formulario.");
     const item = sale.items[0];
     setEditingId(sale.id);
-    setForm({ seller_id: String(sale.seller_id), product_id: String(item.product_id), quantity: item.quantity, payment_method: sale.payment_method, customer_name: sale.customer_name || "", customer_phone: sale.customer_phone || "" });
+    setForm({ seller_id: String(sale.seller_id), customer_id: String(sale.customer_id || ""), product_id: String(item.product_id), quantity: item.quantity, payment_method: sale.payment_method });
     setMessage(`Editando venda #${sale.id}.`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -310,9 +359,10 @@ function Sales({ api, user }) {
       setMessage(error.message);
     }
   }
+  async function createCustomer(e) { e.preventDefault(); setMessage(""); try { const created = await api.call("/customers", { method: "POST", body: JSON.stringify({ ...customerForm, price_table_id: customerForm.price_table_id ? Number(customerForm.price_table_id) : null }) }); await customersLoad.reload(); setForm((current) => ({ ...current, customer_id: String(created.id) })); setCustomerForm(emptyCustomer); setShowCustomer(false); setMessage("Cliente cadastrado e selecionado."); } catch (error) { setMessage(error.message); } }
   const canManage = user.role === "admin" || user.role === "gerente";
-  const formPanel = <form className="panel form sale-form" onSubmit={save}><h2>{editingId ? `Alterar venda #${editingId}` : "Lancar Venda"}</h2>{editingId && <p className="edit-banner">Ao salvar, o estoque anterior sera devolvido e a nova quantidade sera baixada.</p>}{user.role !== "vendedor" && <label className="field"><span>Vendedor</span><select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value })} required><option value="">Selecione</option>{sellers.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}<label className="field"><span>Produto</span><select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required><option value="">Selecione</option>{products.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name} · {money(p.sale_price)} · estoque {p.current_stock}</option>)}</select></label><label className="field"><span>Quantidade</span><input type="number" min="0.01" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} required /></label><div className="total"><small>Total da venda</small><strong>{money(total)}</strong></div><label className="field"><span>Forma de pagamento</span><select value={form.payment_method} onChange={(e) => setForm({ ...form, payment_method: e.target.value })}><option value="dinheiro">Dinheiro</option><option value="pix">Pix</option><option value="cartao">Cartao</option><option value="prazo">A prazo</option></select></label><label className="field"><span>Cliente</span><input placeholder="Nome do cliente" value={form.customer_name} onChange={(e) => setForm({ ...form, customer_name: e.target.value })} /></label><label className="field"><span>Telefone do cliente</span><input placeholder="Ex.: +5563999999999" value={form.customer_phone} onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} /></label><button className="primary big"><ReceiptText size={18} /> {editingId ? "Salvar alteracoes" : "Confirmar Venda"}</button>{editingId && <button type="button" onClick={cancelEdit}>Cancelar edicao</button>}{message && <p className="form-status">{message}</p>}</form>;
-  const saleList = (sales || []).map((sale) => <Row key={sale.id} title={`${sale.seller_name} · ${money(sale.total_value)}`} meta={`#${sale.id} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.payment_method} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")} · ${sale.status}`} onEdit={canManage && sale.status === "confirmada" ? () => startEdit(sale) : null} actions={canManage && sale.status === "confirmada" ? <button className="danger" onClick={() => removeSale(sale)}><Trash2 size={16} /> Excluir</button> : null} />);
+  const formPanel = <div className="sale-stack"><form className="panel form sale-form" onSubmit={save}><h2>{editingId ? `Alterar venda #${editingId}` : "Lancar Venda"}</h2>{editingId && <p className="edit-banner">Ao salvar, o estoque anterior sera devolvido e a nova quantidade sera baixada.</p>}{user.role !== "vendedor" && <label className="field"><span>Vendedor</span><select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value })} required><option value="">Selecione</option>{sellers.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}<label className="field"><span>Cliente</span><select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value, product_id: "" })} required><option value="">Selecione o cliente</option>{(customersLoad.data || []).filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.legal_name} · {c.cnpj}</option>)}</select></label><button type="button" onClick={() => setShowCustomer(!showCustomer)}><UserPlus size={16} /> {showCustomer ? "Fechar cadastro" : "Cadastrar novo cliente"}</button><label className="field"><span>Tabela aplicada</span><input value={priceTable?.name || "Selecione um cliente"} readOnly /></label><label className="field"><span>Produto</span><select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required disabled={!customer}><option value="">Selecione</option>{products.filter((p) => p.active).map((p) => { const price = priceTable?.items.find((i) => i.product_id === p.id)?.price; return <option key={p.id} value={p.id}>{p.name} · {price == null ? "sem preco" : money(price)} · estoque {p.current_stock}</option>; })}</select></label><label className="field"><span>Quantidade</span><input type="number" min="0.01" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} required /></label><div className="total"><small>Total da venda</small><strong>{money(total)}</strong></div><label className="field"><span>Forma de pagamento</span><select value={form.payment_method} onChange={(e) => setForm({ ...form, payment_method: e.target.value })}><option value="dinheiro">Dinheiro</option><option value="pix">Pix</option><option value="cartao">Cartao</option><option value="prazo">A prazo</option></select></label><button className="primary big"><ReceiptText size={18} /> {editingId ? "Salvar alteracoes" : "Confirmar Venda"}</button>{editingId && <button type="button" onClick={cancelEdit}>Cancelar edicao</button>}{message && <p className="form-status">{message}</p>}</form>{showCustomer && <form className="panel form inline-customer" onSubmit={createCustomer}><h2>Novo cliente</h2><CustomerFields form={customerForm} setForm={setCustomerForm} tables={tables} compact /><button className="primary"><Save size={16} /> Cadastrar e selecionar</button></form>}</div>;
+  const saleList = (sales || []).map((sale) => <Row key={sale.id} title={`${sale.customer_name || "Cliente antigo"} · ${money(sale.total_value)}`} meta={`#${sale.id} · ${sale.seller_name} · ${sale.price_table_name || "preco anterior"} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")} · ${sale.status}`} onEdit={canManage && sale.status === "confirmada" && sale.customer_id ? () => startEdit(sale) : null} actions={canManage && sale.status === "confirmada" ? <button className="danger" onClick={() => removeSale(sale)}><Trash2 size={16} /> Excluir</button> : null} />);
   return <CrudLayout form={formPanel} list={saleList} />;
 }
 

@@ -1,5 +1,5 @@
 from datetime import date, datetime, time
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, Time
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -21,6 +21,42 @@ class Product(Base, TimestampMixin):
     current_stock: Mapped[float] = mapped_column(Float, default=0)
     minimum_stock: Mapped[float] = mapped_column(Float, default=0)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PriceTable(Base, TimestampMixin):
+    __tablename__ = "price_tables"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    items = relationship("PriceTableItem", cascade="all, delete-orphan", back_populates="price_table")
+
+
+class PriceTableItem(Base, TimestampMixin):
+    __tablename__ = "price_table_items"
+    __table_args__ = (UniqueConstraint("price_table_id", "product_id", name="uq_price_table_product"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    price_table_id: Mapped[int] = mapped_column(ForeignKey("price_tables.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    price: Mapped[float] = mapped_column(Float)
+    price_table = relationship("PriceTable", back_populates="items")
+    product = relationship("Product")
+
+
+class Customer(Base, TimestampMixin):
+    __tablename__ = "customers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cnpj: Mapped[str] = mapped_column(String(14), unique=True, index=True)
+    legal_name: Mapped[str] = mapped_column(String(180), index=True)
+    state_registration: Mapped[str] = mapped_column(String(40))
+    address: Mapped[str] = mapped_column(String(300))
+    reference_point: Mapped[str] = mapped_column(String(200))
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    price_table_id: Mapped[int | None] = mapped_column(ForeignKey("price_tables.id"), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    price_table = relationship("PriceTable")
 
 
 class StockMovement(Base, TimestampMixin):
@@ -80,6 +116,7 @@ class Sale(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), default="confirmada")
     seller = relationship("Seller")
     items = relationship("SaleItem", cascade="all, delete-orphan", back_populates="sale")
+    customer_link = relationship("SaleCustomerLink", cascade="all, delete-orphan", back_populates="sale", uselist=False)
 
 
 class SaleItem(Base):
@@ -92,6 +129,16 @@ class SaleItem(Base):
     subtotal: Mapped[float] = mapped_column(Float)
     sale = relationship("Sale", back_populates="items")
     product = relationship("Product")
+
+
+class SaleCustomerLink(Base):
+    __tablename__ = "sale_customer_links"
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
+    price_table_id: Mapped[int] = mapped_column(ForeignKey("price_tables.id"))
+    sale = relationship("Sale", back_populates="customer_link")
+    customer = relationship("Customer")
+    price_table = relationship("PriceTable")
 
 
 class DeliveryManifest(Base, TimestampMixin):

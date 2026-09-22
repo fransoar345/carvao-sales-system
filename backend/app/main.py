@@ -78,12 +78,16 @@ def movement_delta(kind: str, quantity: float) -> float:
 
 
 def sale_to_schema(sale: models.Sale) -> schemas.SaleOut:
+    link = sale.customer_link
     return schemas.SaleOut(
         id=sale.id,
         seller_id=sale.seller_id,
         seller_name=sale.seller.name,
         customer_name=sale.customer_name,
         customer_phone=sale.customer_phone,
+        customer_id=link.customer_id if link else None,
+        customer_cnpj=link.customer.cnpj if link else None,
+        price_table_name=link.price_table.name if link else None,
         occurred_at=sale.occurred_at,
         total_value=sale.total_value,
         payment_method=sale.payment_method,
@@ -102,6 +106,48 @@ def sale_to_schema(sale: models.Sale) -> schemas.SaleOut:
     )
 
 
+def sale_load_options():
+    return (
+        joinedload(models.Sale.seller),
+        joinedload(models.Sale.items).joinedload(models.SaleItem.product),
+        joinedload(models.Sale.customer_link).joinedload(models.SaleCustomerLink.customer),
+        joinedload(models.Sale.customer_link).joinedload(models.SaleCustomerLink.price_table),
+    )
+
+
+def price_table_to_schema(row: models.PriceTable) -> schemas.PriceTableOut:
+    return schemas.PriceTableOut(
+        id=row.id, name=row.name, description=row.description, is_default=row.is_default, active=row.active,
+        items=[schemas.PriceTableItemOut(product_id=item.product_id, product_name=item.product.name, price=item.price) for item in row.items],
+    )
+
+
+def customer_to_schema(row: models.Customer) -> schemas.CustomerOut:
+    return schemas.CustomerOut(
+        id=row.id, cnpj=row.cnpj, legal_name=row.legal_name, state_registration=row.state_registration,
+        address=row.address, reference_point=row.reference_point, phone=row.phone, email=row.email,
+        price_table_id=row.price_table_id, price_table_name=row.price_table.name if row.price_table else None, active=row.active,
+    )
+
+
+def resolve_customer_prices(db: Session, customer_id: int | None, item_ids: list[int]):
+    if not customer_id:
+        raise HTTPException(400, "Selecione ou cadastre um cliente")
+    customer = db.query(models.Customer).options(joinedload(models.Customer.price_table)).filter(models.Customer.id == customer_id).first()
+    if not customer or not customer.active:
+        raise HTTPException(404, "Cliente nao encontrado")
+    price_table = customer.price_table or db.query(models.PriceTable).filter(models.PriceTable.is_default.is_(True), models.PriceTable.active.is_(True)).first()
+    if not price_table or not price_table.active:
+        raise HTTPException(400, "Cliente sem tabela de precos ativa")
+    rows = db.query(models.PriceTableItem).filter(models.PriceTableItem.price_table_id == price_table.id, models.PriceTableItem.product_id.in_(item_ids)).all()
+    prices = {row.product_id: row.price for row in rows}
+    missing = set(item_ids) - set(prices)
+    if missing:
+        product = db.get(models.Product, next(iter(missing)))
+        raise HTTPException(400, f"Produto {product.name if product else ''} sem preco na tabela {price_table.name}")
+    return customer, price_table, prices
+
+
 def delivery_manifest_options():
     return (
         joinedload(models.DeliveryManifest.items)
@@ -111,6 +157,14 @@ def delivery_manifest_options():
         .joinedload(models.DeliveryManifestItem.sale)
         .joinedload(models.Sale.items)
         .joinedload(models.SaleItem.product),
+        joinedload(models.DeliveryManifest.items)
+        .joinedload(models.DeliveryManifestItem.sale)
+        .joinedload(models.Sale.customer_link)
+        .joinedload(models.SaleCustomerLink.customer),
+        joinedload(models.DeliveryManifest.items)
+        .joinedload(models.DeliveryManifestItem.sale)
+        .joinedload(models.Sale.customer_link)
+        .joinedload(models.SaleCustomerLink.price_table),
     )
 
 
@@ -187,6 +241,9 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
     product = models.Product(**payload.model_dump())
     db.add(product)
     db.flush()
+    default_table = db.query(models.PriceTable).filter(models.PriceTable.is_default.is_(True)).first()
+    if default_table:
+        default_table.items.append(models.PriceTableItem(product_id=product.id, price=product.sale_price))
     audit(db, user, "create", "product", product.id, product.name)
     db.commit()
     db.refresh(product)
@@ -200,6 +257,15 @@ def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session 
         raise HTTPException(404, "Produto nao encontrado")
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(product, key, value)
+    if payload.sale_price is not None:
+        default_item = (
+            db.query(models.PriceTableItem)
+            .join(models.PriceTable)
+            .filter(models.PriceTable.is_default.is_(True), models.PriceTableItem.product_id == product.id)
+            .first()
+        )
+        if default_item:
+            default_item.price = payload.sale_price
     audit(db, user, "update", "product", product.id, product.name)
     db.commit()
     db.refresh(product)
@@ -215,6 +281,78 @@ def delete_product(product_id: int, db: Session = Depends(get_db), user: models.
     audit(db, user, "deactivate", "product", product.id, product.name)
     db.commit()
     return {"ok": True}
+
+
+@app.get("/api/price-tables", response_model=list[schemas.PriceTableOut])
+def list_price_tables(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    rows = db.query(models.PriceTable).options(joinedload(models.PriceTable.items).joinedload(models.PriceTableItem.product)).order_by(models.PriceTable.name).all()
+    return [price_table_to_schema(row) for row in rows]
+
+
+@app.post("/api/price-tables", response_model=schemas.PriceTableOut)
+def create_price_table(payload: schemas.PriceTableCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    if db.query(models.PriceTable).filter(func.lower(models.PriceTable.name) == payload.name.strip().lower()).first():
+        raise HTTPException(400, "Ja existe uma tabela com este nome")
+    if len({item.product_id for item in payload.items}) != len(payload.items):
+        raise HTTPException(400, "Produto repetido na tabela")
+    if payload.is_default:
+        db.query(models.PriceTable).update({models.PriceTable.is_default: False})
+    row = models.PriceTable(name=payload.name.strip(), description=payload.description, is_default=payload.is_default, active=payload.active)
+    row.items = [models.PriceTableItem(product_id=item.product_id, price=item.price) for item in payload.items]
+    db.add(row); db.flush(); audit(db, user, "create", "price_table", row.id, row.name); db.commit()
+    row = db.query(models.PriceTable).options(joinedload(models.PriceTable.items).joinedload(models.PriceTableItem.product)).get(row.id)
+    return price_table_to_schema(row)
+
+
+@app.put("/api/price-tables/{table_id}", response_model=schemas.PriceTableOut)
+def update_price_table(table_id: int, payload: schemas.PriceTableUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    row = db.query(models.PriceTable).options(joinedload(models.PriceTable.items)).filter(models.PriceTable.id == table_id).first()
+    if not row: raise HTTPException(404, "Tabela nao encontrada")
+    duplicate = db.query(models.PriceTable).filter(func.lower(models.PriceTable.name) == payload.name.strip().lower(), models.PriceTable.id != table_id).first()
+    if duplicate: raise HTTPException(400, "Ja existe uma tabela com este nome")
+    if len({item.product_id for item in payload.items}) != len(payload.items): raise HTTPException(400, "Produto repetido na tabela")
+    if payload.is_default: db.query(models.PriceTable).filter(models.PriceTable.id != table_id).update({models.PriceTable.is_default: False})
+    row.name, row.description, row.is_default, row.active = payload.name.strip(), payload.description, payload.is_default, payload.active
+    existing = {item.product_id: item for item in row.items}
+    incoming = {item.product_id: item.price for item in payload.items}
+    for product_id, price in incoming.items():
+        if product_id in existing:
+            existing[product_id].price = price
+        else:
+            row.items.append(models.PriceTableItem(product_id=product_id, price=price))
+    for product_id, item in existing.items():
+        if product_id not in incoming:
+            db.delete(item)
+    audit(db, user, "update", "price_table", row.id, row.name); db.commit()
+    row = db.query(models.PriceTable).options(joinedload(models.PriceTable.items).joinedload(models.PriceTableItem.product)).get(row.id)
+    return price_table_to_schema(row)
+
+
+@app.get("/api/customers", response_model=list[schemas.CustomerOut])
+def list_customers(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    rows = db.query(models.Customer).options(joinedload(models.Customer.price_table)).order_by(models.Customer.legal_name).all()
+    return [customer_to_schema(row) for row in rows]
+
+
+@app.post("/api/customers", response_model=schemas.CustomerOut)
+def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    if db.query(models.Customer).filter(models.Customer.cnpj == payload.cnpj).first(): raise HTTPException(400, "CNPJ ja cadastrado")
+    if payload.price_table_id and not db.get(models.PriceTable, payload.price_table_id): raise HTTPException(404, "Tabela de precos nao encontrada")
+    row = models.Customer(**payload.model_dump()); db.add(row); db.flush()
+    audit(db, user, "create", "customer", row.id, row.legal_name); db.commit(); db.refresh(row)
+    return customer_to_schema(row)
+
+
+@app.put("/api/customers/{customer_id}", response_model=schemas.CustomerOut)
+def update_customer(customer_id: int, payload: schemas.CustomerUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    row = db.get(models.Customer, customer_id)
+    if not row: raise HTTPException(404, "Cliente nao encontrado")
+    duplicate = db.query(models.Customer).filter(models.Customer.cnpj == payload.cnpj, models.Customer.id != customer_id).first()
+    if duplicate: raise HTTPException(400, "CNPJ ja cadastrado")
+    if payload.price_table_id and not db.get(models.PriceTable, payload.price_table_id): raise HTTPException(404, "Tabela de precos nao encontrada")
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    audit(db, user, "update", "customer", row.id, row.legal_name); db.commit(); db.refresh(row)
+    return customer_to_schema(row)
 
 
 @app.get("/api/stock/movements", response_model=list[schemas.MovementOut])
@@ -352,7 +490,7 @@ def list_sales(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    query = db.query(models.Sale).options(joinedload(models.Sale.seller), joinedload(models.Sale.items).joinedload(models.SaleItem.product))
+    query = db.query(models.Sale).options(*sale_load_options())
     if user.role == "vendedor":
         query = query.filter(models.Sale.seller_id == user.seller_id)
     elif seller_id:
@@ -375,7 +513,8 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
     if not payload.items:
         raise HTTPException(400, "Inclua ao menos um item")
 
-    sale = models.Sale(seller_id=seller_id, customer_name=payload.customer_name, customer_phone=payload.customer_phone, payment_method=payload.payment_method, status="confirmada")
+    customer, price_table, prices = resolve_customer_prices(db, payload.customer_id, [item.product_id for item in payload.items])
+    sale = models.Sale(seller_id=seller_id, customer_name=customer.legal_name, customer_phone=customer.phone, payment_method=payload.payment_method, status="confirmada")
     total = 0.0
     touched_products: list[models.Product] = []
     for item in payload.items:
@@ -384,19 +523,20 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
             raise HTTPException(404, "Produto indisponivel")
         if product.current_stock < item.quantity:
             raise HTTPException(400, f"Estoque insuficiente para {product.name}")
-        unit_price = item.unit_price if item.unit_price is not None else product.sale_price
+        unit_price = prices[item.product_id]
         subtotal = item.quantity * unit_price
         product.current_stock -= item.quantity
         total += subtotal
         touched_products.append(product)
         sale.items.append(models.SaleItem(product_id=product.id, quantity=item.quantity, unit_price=unit_price, subtotal=subtotal))
         db.add(models.StockMovement(product_id=product.id, movement_type="saida", quantity=item.quantity, responsible_id=user.id, note="Baixa automatica por venda"))
-    sale.total_value = payload.total_value if payload.total_value is not None else total
+    sale.total_value = total
     db.add(sale)
     db.flush()
+    sale.customer_link = models.SaleCustomerLink(customer_id=customer.id, price_table_id=price_table.id)
     audit(db, user, "create", "sale", sale.id, f"Venda R$ {sale.total_value:.2f}")
     db.commit()
-    sale = db.query(models.Sale).options(joinedload(models.Sale.seller), joinedload(models.Sale.items).joinedload(models.SaleItem.product)).get(sale.id)
+    sale = db.query(models.Sale).options(*sale_load_options()).get(sale.id)
     await notify_sale(db, sale)
     for product in touched_products:
         await notify_low_stock(db, product)
@@ -405,7 +545,7 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
 
 @app.put("/api/sales/{sale_id}", response_model=schemas.SaleOut)
 def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
-    sale = db.query(models.Sale).options(joinedload(models.Sale.items).joinedload(models.SaleItem.product)).filter(models.Sale.id == sale_id).first()
+    sale = db.query(models.Sale).options(*sale_load_options()).filter(models.Sale.id == sale_id).first()
     if not sale:
         raise HTTPException(404, "Venda nao encontrada")
     if sale.status != "confirmada":
@@ -414,6 +554,7 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     seller = db.get(models.Seller, payload.seller_id)
     if not seller or not seller.active:
         raise HTTPException(404, "Vendedor nao encontrado")
+    customer, price_table, prices = resolve_customer_prices(db, payload.customer_id, [item.product_id for item in payload.items])
 
     restored_by_product: dict[int, float] = {}
     for old_item in sale.items:
@@ -436,20 +577,25 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     total = 0.0
     for new_item in payload.items:
         product = products[new_item.product_id]
-        unit_price = new_item.unit_price if new_item.unit_price is not None else product.sale_price
+        unit_price = prices[new_item.product_id]
         subtotal = new_item.quantity * unit_price
         product.current_stock -= new_item.quantity
         total += subtotal
         sale.items.append(models.SaleItem(product_id=product.id, quantity=new_item.quantity, unit_price=unit_price, subtotal=subtotal))
         db.add(models.StockMovement(product_id=product.id, movement_type="saida", quantity=new_item.quantity, responsible_id=user.id, note=f"Baixa por edicao da venda #{sale.id}"))
     sale.seller_id = payload.seller_id
-    sale.customer_name = payload.customer_name
-    sale.customer_phone = payload.customer_phone
+    sale.customer_name = customer.legal_name
+    sale.customer_phone = customer.phone
     sale.payment_method = payload.payment_method
-    sale.total_value = payload.total_value if payload.total_value is not None else total
+    sale.total_value = total
+    if sale.customer_link:
+        sale.customer_link.customer_id = customer.id
+        sale.customer_link.price_table_id = price_table.id
+    else:
+        sale.customer_link = models.SaleCustomerLink(customer_id=customer.id, price_table_id=price_table.id)
     audit(db, user, "update", "sale", sale.id, f"Venda alterada para R$ {sale.total_value:.2f}")
     db.commit()
-    updated = db.query(models.Sale).options(joinedload(models.Sale.seller), joinedload(models.Sale.items).joinedload(models.SaleItem.product)).filter(models.Sale.id == sale.id).first()
+    updated = db.query(models.Sale).options(*sale_load_options()).filter(models.Sale.id == sale.id).first()
     return sale_to_schema(updated)
 
 
@@ -479,7 +625,7 @@ def list_sales_pending_delivery(db: Session = Depends(get_db), user: models.User
     )
     sales = (
         db.query(models.Sale)
-        .options(joinedload(models.Sale.seller), joinedload(models.Sale.items).joinedload(models.SaleItem.product))
+        .options(*sale_load_options())
         .filter(models.Sale.status == "confirmada", ~models.Sale.id.in_(assigned_sale_ids))
         .order_by(models.Sale.occurred_at.desc())
         .all()
