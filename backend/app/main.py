@@ -13,7 +13,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -1089,6 +1089,99 @@ def delivery_manifest_pdf(manifest_id: int, db: Session = Depends(get_db), user:
         ("TEXTCOLOR", (0, 1), (-1, 1), colors.HexColor("#66756b")),
     ]))
     story.append(signatures)
+
+    payment_labels = {"dinheiro": "Dinheiro", "pix": "Pix", "cartao": "Cartao", "prazo": "A prazo"}
+    for item in manifest.items:
+        sale = item.sale
+        customer = sale.customer_link.customer if sale.customer_link else None
+        story.extend([
+            PageBreak(),
+            Paragraph("CARVAO PRO", subtitle_style),
+            Paragraph("Comprovante de Entrega", title_style),
+            Paragraph(f"{manifest.code} - Entrega {item.delivery_order} de {len(manifest.items)}", subtitle_style),
+            Spacer(1, 4 * mm),
+        ])
+        receipt_details = [
+            [Paragraph("VENDA", small_style), Paragraph("DATA DA ENTREGA", small_style), Paragraph("MOTORISTA", small_style), Paragraph("VEICULO", small_style)],
+            [Paragraph(f"#{sale.id}", cell_bold_style), Paragraph(manifest.delivery_date.strftime("%d/%m/%Y"), cell_bold_style), Paragraph(escape(manifest.driver_name), cell_style), Paragraph(escape(manifest.vehicle or "Nao informado"), cell_style)],
+        ]
+        receipt_details_table = Table(receipt_details, colWidths=[30 * mm, 42 * mm, 62 * mm, 43 * mm])
+        receipt_details_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4ed")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cfd8cd")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.extend([receipt_details_table, Spacer(1, 5 * mm)])
+
+        customer_name = customer.legal_name if customer else (sale.customer_name or f"Venda #{sale.id}")
+        customer_document = customer.cnpj if customer else "Nao informado"
+        customer_registration = customer.state_registration if customer else "Nao informada"
+        customer_phone = customer.phone if customer and customer.phone else (sale.customer_phone or "Nao informado")
+        customer_rows = [
+            [Paragraph("EMPRESA / CLIENTE", small_style), Paragraph("CNPJ", small_style)],
+            [Paragraph(escape(customer_name), cell_bold_style), Paragraph(escape(customer_document), cell_style)],
+            [Paragraph("INSCRICAO ESTADUAL", small_style), Paragraph("CONTATO", small_style)],
+            [Paragraph(escape(customer_registration), cell_style), Paragraph(escape(customer_phone), cell_style)],
+            [Paragraph("ENDERECO DA ENTREGA", small_style), ""],
+            [Paragraph(escape(item.delivery_address), cell_style), ""],
+        ]
+        customer_table = Table(customer_rows, colWidths=[108 * mm, 69 * mm])
+        customer_table.setStyle(TableStyle([
+            ("SPAN", (0, 4), (1, 4)), ("SPAN", (0, 5), (1, 5)),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4ed")),
+            ("BACKGROUND", (0, 2), (-1, 2), colors.HexColor("#eef4ed")),
+            ("BACKGROUND", (0, 4), (-1, 4), colors.HexColor("#eef4ed")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cfd8cd")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.extend([customer_table, Spacer(1, 5 * mm)])
+
+        product_rows = [[Paragraph("PRODUTO", small_style), Paragraph("QTD.", small_style), Paragraph("UNITARIO", small_style), Paragraph("SUBTOTAL", small_style)]]
+        for sale_item in sale.items:
+            product_rows.append([
+                Paragraph(escape(sale_item.product.name), cell_style),
+                Paragraph(f"{sale_item.quantity:g} {sale_item.product.unit}", cell_style),
+                Paragraph(f"R$ {sale_item.unit_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), cell_style),
+                Paragraph(f"R$ {sale_item.subtotal:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), cell_bold_style),
+            ])
+        product_table = Table(product_rows, colWidths=[87 * mm, 28 * mm, 31 * mm, 31 * mm], repeatRows=1)
+        product_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#18231c")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cfd8cd")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        total_text = f"R$ {sale.total_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        story.extend([
+            product_table,
+            Spacer(1, 4 * mm),
+            Paragraph(f"<b>Total da venda:</b> {total_text} &nbsp;&nbsp;&nbsp; <b>Pagamento:</b> {payment_labels.get(sale.payment_method, escape(sale.payment_method))}", cell_style),
+            Spacer(1, 9 * mm),
+            Paragraph("Declaro que recebi os produtos acima relacionados em conformidade com a entrega.", cell_style),
+            Spacer(1, 14 * mm),
+        ])
+        receipt_signatures = Table([
+            ["________________________________________", "________________________"],
+            ["Assinatura do responsavel pelo recebimento", "Data e hora"],
+            ["", ""],
+            ["________________________________________", "________________________"],
+            ["Nome legivel", "CPF / Documento"],
+        ], colWidths=[115 * mm, 62 * mm])
+        receipt_signatures.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("TEXTCOLOR", (0, 1), (-1, 1), colors.HexColor("#66756b")),
+            ("TEXTCOLOR", (0, 4), (-1, 4), colors.HexColor("#66756b")),
+            ("TOPPADDING", (0, 2), (-1, 2), 8),
+        ]))
+        story.append(receipt_signatures)
 
     def draw_page_number(pdf_canvas, pdf_doc):
         pdf_canvas.saveState()
