@@ -468,10 +468,12 @@ def list_customers(db: Session = Depends(get_db), user: models.User = Depends(ge
 def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     if not has_permission(user, "customers.create"): raise HTTPException(403, "Permissao insuficiente")
     if db.query(models.Customer).filter(models.Customer.cnpj == payload.cnpj).first(): raise HTTPException(400, "CNPJ ja cadastrado")
-    if payload.price_table_id and not db.get(models.PriceTable, payload.price_table_id): raise HTTPException(404, "Tabela de precos nao encontrada")
+    requested_price_table_id = payload.price_table_id if has_permission(user, "customers.change_price_table") else None
+    if requested_price_table_id and not db.get(models.PriceTable, requested_price_table_id): raise HTTPException(404, "Tabela de precos nao encontrada")
     owner_seller_id = payload.owner_seller_id if has_permission(user, "customers.transfer") else user.seller_id
     if not owner_seller_id or not db.get(models.Seller, owner_seller_id): raise HTTPException(400, "Selecione o vendedor responsavel")
     customer_data = payload.model_dump(exclude={"owner_seller_id"})
+    customer_data["price_table_id"] = requested_price_table_id
     row = models.Customer(**customer_data); db.add(row); db.flush()
     row.ownership = models.CustomerOwnership(seller_id=owner_seller_id)
     audit(db, user, "create", "customer", row.id, row.legal_name); db.commit(); db.refresh(row)

@@ -65,7 +65,7 @@ function App() {
   const tabs = [
     ["dashboard", "Dashboard", BarChart3, "dashboard.view"],
     ["sale", "Venda", ShoppingCart, "sales.create"],
-    ["customers", "Clientes", Building2, "customers.view_all"],
+    ["customers", "Clientes", Building2, ["customers.view_all", "customers.view_own"]],
     ["prices", "Tabelas", Tags, "settings.price_tables"],
     ["products", "Produtos", Boxes, "products.view"],
     ["stock", "Estoque", PackagePlus, "stock.view"],
@@ -74,7 +74,7 @@ function App() {
     ["sellers", "Vendedores", Users, "users.view"],
     ["access", "Perfis e Permissoes", ShieldCheck, "users.change_permissions"],
     ["whatsapp", "Alertas", MessageCircle, "settings.alerts"],
-  ].filter((item) => can(item[3]));
+  ].filter((item) => Array.isArray(item[3]) ? item[3].some(can) : can(item[3]));
 
   return (
     <div className="app">
@@ -108,7 +108,7 @@ function App() {
         </header>
         {tab === "dashboard" && <Dashboard api={api} token={token} user={user} />}
         {tab === "sale" && <Sales api={api} user={user} />}
-        {tab === "customers" && <Customers api={api} />}
+        {tab === "customers" && <Customers api={api} user={user} />}
         {tab === "prices" && <PriceTables api={api} />}
         {tab === "products" && <Products api={api} user={user} />}
         {tab === "stock" && <Stock api={api} user={user} />}
@@ -491,13 +491,13 @@ const emptyCustomer = {
   active: true,
 };
 
-function CustomerFields({ form, setForm, tables, sellers = [], showOwner = false, compact = false }) {
+function CustomerFields({ form, setForm, tables, sellers = [], showOwner = false, showPriceTable = true, compact = false }) {
   return (
     <div className={compact ? "customer-fields compact" : "customer-fields"}>
-      <label className="field">
+      {showPriceTable && <label className="field">
         <span>CNPJ</span>
         <input value={form.cnpj} onChange={(e) => setForm({ ...form, cnpj: e.target.value })} placeholder="00.000.000/0000-00" required />
-      </label>
+      </label>}
       <label className="field">
         <span>Razao Social</span>
         <input value={form.legal_name} onChange={(e) => setForm({ ...form, legal_name: e.target.value })} required />
@@ -548,7 +548,7 @@ function CustomerFields({ form, setForm, tables, sellers = [], showOwner = false
   );
 }
 
-function Customers({ api }) {
+function Customers({ api, user }) {
   const [form, setForm] = useState(emptyCustomer);
   const [message, setMessage] = useState("");
   const customersLoad = useLoad(api, () => api.call("/customers"), []);
@@ -574,13 +574,13 @@ function Customers({ api }) {
       setMessage(error.message);
     }
   }
-  const list = (customersLoad.data || []).map((c) => <Row key={c.id} title={c.legal_name} meta={`CNPJ ${c.cnpj} · Vendedor: ${c.owner_seller_name || "nao definido"} · ${c.price_table_name || "Tabela padrao"} · ${c.phone || c.email}`} onEdit={() => setForm({ ...c, price_table_id: c.price_table_id || "", owner_seller_id: c.owner_seller_id || "" })} />);
+  const list = (customersLoad.data || []).map((c) => <Row key={c.id} title={c.legal_name} meta={`CNPJ ${c.cnpj} · Vendedor: ${c.owner_seller_name || "nao definido"} · ${c.price_table_name || "Tabela padrao"} · ${c.phone || c.email}`} onEdit={allowed(user, "customers.edit") ? () => setForm({ ...c, price_table_id: c.price_table_id || "", owner_seller_id: c.owner_seller_id || "" }) : null} />);
   return (
     <CrudLayout
       form={
         <form className="panel form" onSubmit={save}>
           <h2>{form.id ? "Alterar cliente" : "Cadastro de cliente"}</h2>
-          <CustomerFields form={form} setForm={setForm} tables={tables} sellers={sellers} showOwner />
+          <CustomerFields form={form} setForm={setForm} tables={tables} sellers={sellers} showOwner={allowed(user, "customers.transfer")} showPriceTable={allowed(user, "customers.change_price_table")} />
           <button className="primary">
             <Save size={16} /> Salvar cliente
           </button>
