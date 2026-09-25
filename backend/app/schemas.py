@@ -309,3 +309,58 @@ class WhatsAppSettingsOut(WhatsAppSettingsIn):
 
     class Config:
         from_attributes = True
+
+
+class NamedEntityCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+
+
+class CostCenterOut(BaseModel):
+    id: int
+    name: str
+    active: bool
+    class Config: from_attributes = True
+
+
+class SupplierCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    document: str | None = None
+    phone: str | None = None
+    email: str | None = None
+
+
+class SupplierOut(SupplierCreate):
+    id: int
+    active: bool
+    class Config: from_attributes = True
+
+
+class FinancialAccountCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    account_type: str
+    initial_balance: float = 0
+
+
+class FinancialAccountOut(FinancialAccountCreate):
+    id: int
+    active: bool
+    balance: float = 0
+
+
+class FinancialPaymentCreate(BaseModel):
+    account_id: int
+    amount: float = Field(gt=0)
+    payment_method: str = "pix"
+    occurred_at: datetime | None = None
+    note: str | None = None
+
+
+class PayableCreate(BaseModel):
+    supplier_id: int | None = None
+    cost_center_id: int
+    category: str
+    description: str
+    competence_date: date
+    due_date: date
+    original_amount: float = Field(gt=0)
+    notes: str | None = None

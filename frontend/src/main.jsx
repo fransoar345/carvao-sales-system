@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Building2, Ban, Boxes, CheckCircle2, ClipboardList, Trash2, Download, LogOut, MessageCircle, MapPin, PackagePlus, Play, Printer, ReceiptText, Save, ShoppingCart, Truck, Tags, UserPlus, Users } from "lucide-react";
+import { BarChart3, Building2, Ban, Boxes, CheckCircle2, ClipboardList, Trash2, Download, LogOut, MessageCircle, MapPin, PackagePlus, Play, Printer, ReceiptText, Save, ShoppingCart, Truck, Tags, UserPlus, Users, WalletCards } from "lucide-react";
 import "./styles.css";
 
 const API = import.meta.env.VITE_API_URL || "https://carvao-sales-system-production.up.railway.app/api";
@@ -56,6 +56,7 @@ function App() {
     ["products", "Produtos", Boxes, ["admin", "gerente"]],
     ["stock", "Estoque", PackagePlus, ["admin", "gerente"]],
     ["deliveries", "Romaneios", ClipboardList, ["admin", "gerente"]],
+    ["finance", "Financeiro", WalletCards, ["admin", "gerente"]],
     ["sellers", "Vendedores", Users, ["admin"]],
     ["whatsapp", "WhatsApp", MessageCircle, ["admin"]],
   ].filter((item) => item[3].includes(user.role));
@@ -97,6 +98,7 @@ function App() {
         {tab === "products" && <Products api={api} />}
         {tab === "stock" && <Stock api={api} />}
         {tab === "deliveries" && <Deliveries api={api} token={token} />}
+        {tab === "finance" && <Finance api={api} />}
         {tab === "sellers" && <Sellers api={api} />}
         {tab === "whatsapp" && <WhatsApp api={api} />}
       </main>
@@ -1163,6 +1165,59 @@ function Deliveries({ api, token }) {
       </div>
     </section>
   );
+}
+
+function Finance({ api }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const dashboard = useLoad(api, () => api.call("/finance/dashboard"), []);
+  const receivables = useLoad(api, () => api.call("/finance/receivables"), []);
+  const payables = useLoad(api, () => api.call("/finance/payables"), []);
+  const accounts = useLoad(api, () => api.call("/finance/accounts"), []);
+  const suppliers = useLoad(api, () => api.call("/finance/suppliers"), []);
+  const centers = useLoad(api, () => api.call("/finance/cost-centers"), []);
+  const cashFlow = useLoad(api, () => api.call("/finance/cash-flow"), []);
+  const [message, setMessage] = useState("");
+  const [payable, setPayable] = useState({ supplier_id: "", cost_center_id: "", category: "despesa", description: "", competence_date: today, due_date: today, original_amount: 0, notes: "" });
+  const [supplier, setSupplier] = useState({ name: "", document: "", phone: "", email: "" });
+  const refresh = () => { dashboard.reload(); receivables.reload(); payables.reload(); accounts.reload(); cashFlow.reload(); };
+  async function addPayable(e) {
+    e.preventDefault(); setMessage("");
+    try { await api.call("/finance/payables", { method: "POST", body: JSON.stringify({ ...payable, supplier_id: payable.supplier_id ? Number(payable.supplier_id) : null, cost_center_id: Number(payable.cost_center_id), original_amount: Number(payable.original_amount) }) }); setPayable({ supplier_id: "", cost_center_id: "", category: "despesa", description: "", competence_date: today, due_date: today, original_amount: 0, notes: "" }); setMessage("Conta a pagar cadastrada."); refresh(); } catch (error) { setMessage(error.message); }
+  }
+  async function addSupplier(e) {
+    e.preventDefault(); setMessage("");
+    try { await api.call("/finance/suppliers", { method: "POST", body: JSON.stringify(supplier) }); setSupplier({ name: "", document: "", phone: "", email: "" }); suppliers.reload(); setMessage("Fornecedor cadastrado."); } catch (error) { setMessage(error.message); }
+  }
+  async function settle(kind, row) {
+    const defaultAccount = (accounts.data || []).find((account) => account.active);
+    if (!defaultAccount) return setMessage("Cadastre uma conta financeira ativa.");
+    const amountText = window.prompt(`Valor da baixa para ${row.description || row.customer_name}`, String(row.balance));
+    if (!amountText) return;
+    const amount = Number(amountText.replace(",", "."));
+    if (!amount || amount <= 0) return setMessage("Informe um valor valido.");
+    try { await api.call(`/finance/${kind}/${row.id}/payments`, { method: "POST", body: JSON.stringify({ account_id: defaultAccount.id, amount, payment_method: "pix" }) }); setMessage("Baixa registrada com sucesso."); refresh(); } catch (error) { setMessage(error.message); }
+  }
+  if (!dashboard.data) return <Loading />;
+  return <section className="finance-page">
+    <div className="grid finance-metrics">
+      <Metric label="Saldo em contas" value={money(dashboard.data.cash_balance)} />
+      <Metric label="Total a receber" value={money(dashboard.data.receivable_open)} />
+      <Metric label="Total a pagar" value={money(dashboard.data.payable_open)} />
+      <Metric label="Recebimentos hoje" value={money(dashboard.data.received_today)} />
+      <Metric label="Pagamentos hoje" value={money(dashboard.data.paid_today)} />
+      <Metric label="Clientes inadimplentes" value={dashboard.data.overdue_customers} />
+    </div>
+    {message && <p className="panel form-status">{message}</p>}
+    <div className="finance-columns">
+      <Panel title="Contas a receber">{(receivables.data || []).map((row) => <Row key={row.id} title={`${row.customer_name} · ${money(row.balance)}`} meta={`Venda #${row.sale_id} · ${new Date(`${row.due_date}T12:00:00`).toLocaleDateString("pt-BR")} · ${row.status} · ${row.seller_name}`} actions={row.balance > 0 && row.status !== "cancelado" ? <button onClick={() => settle("receivables", row)}>Receber</button> : null} />)}</Panel>
+      <Panel title="Contas a pagar">{(payables.data || []).map((row) => <Row key={row.id} title={`${row.description} · ${money(row.balance)}`} meta={`${row.supplier_name || "Sem fornecedor"} · ${row.cost_center_name} · ${new Date(`${row.due_date}T12:00:00`).toLocaleDateString("pt-BR")} · ${row.status}`} actions={row.balance > 0 && row.status !== "cancelado" ? <button onClick={() => settle("payables", row)}>Pagar</button> : null} />)}</Panel>
+    </div>
+    <div className="finance-columns">
+      <form className="panel form" onSubmit={addPayable}><h2>Nova conta a pagar</h2><label className="field"><span>Descricao</span><input value={payable.description} onChange={(e) => setPayable({ ...payable, description: e.target.value })} required /></label><label className="field"><span>Fornecedor</span><select value={payable.supplier_id} onChange={(e) => setPayable({ ...payable, supplier_id: e.target.value })}><option value="">Sem fornecedor</option>{(suppliers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Centro de custo</span><select value={payable.cost_center_id} onChange={(e) => setPayable({ ...payable, cost_center_id: e.target.value })} required><option value="">Selecione</option>{(centers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Categoria</span><input value={payable.category} onChange={(e) => setPayable({ ...payable, category: e.target.value })} required /></label><label className="field"><span>Competencia</span><input type="date" value={payable.competence_date} onChange={(e) => setPayable({ ...payable, competence_date: e.target.value })} required /></label><label className="field"><span>Vencimento</span><input type="date" value={payable.due_date} onChange={(e) => setPayable({ ...payable, due_date: e.target.value })} required /></label><label className="field"><span>Valor</span><input type="number" min="0.01" step="0.01" value={payable.original_amount} onChange={(e) => setPayable({ ...payable, original_amount: e.target.value })} required /></label><button className="primary"><Save size={16} /> Salvar despesa</button></form>
+      <form className="panel form" onSubmit={addSupplier}><h2>Novo fornecedor</h2><label className="field"><span>Nome / Razao social</span><input value={supplier.name} onChange={(e) => setSupplier({ ...supplier, name: e.target.value })} required /></label><label className="field"><span>CNPJ ou CPF</span><input value={supplier.document} onChange={(e) => setSupplier({ ...supplier, document: e.target.value })} /></label><label className="field"><span>Telefone</span><input value={supplier.phone} onChange={(e) => setSupplier({ ...supplier, phone: e.target.value })} /></label><label className="field"><span>E-mail</span><input type="email" value={supplier.email} onChange={(e) => setSupplier({ ...supplier, email: e.target.value })} /></label><button className="primary"><Save size={16} /> Salvar fornecedor</button><h2 className="finance-subtitle">Contas e saldos</h2>{(accounts.data || []).map((row) => <Row key={row.id} title={row.name} meta={`${row.account_type} · ${money(row.balance)}`} />)}</form>
+    </div>
+    <Panel title="Fluxo de caixa">{(cashFlow.data || []).map((row) => <Row key={row.id} title={`${row.direction === "entrada" ? "+" : "-"} ${money(row.amount)} · ${row.account_name}`} meta={`${new Date(row.occurred_at).toLocaleString("pt-BR")} · ${row.description}`} />)}</Panel>
+  </section>;
 }
 
 function WhatsApp({ api }) {

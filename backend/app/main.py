@@ -220,6 +220,27 @@ def ensure_sale_not_in_active_manifest(db: Session, sale_id: int) -> None:
         raise HTTPException(400, "Cancele o romaneio ativo antes de alterar esta venda")
 
 
+def financial_account_balance(db: Session, account: models.FinancialAccount) -> float:
+    entries = db.query(func.coalesce(func.sum(models.CashTransaction.amount), 0)).filter(models.CashTransaction.account_id == account.id, models.CashTransaction.direction == "entrada", models.CashTransaction.reversed.is_(False)).scalar() or 0
+    exits = db.query(func.coalesce(func.sum(models.CashTransaction.amount), 0)).filter(models.CashTransaction.account_id == account.id, models.CashTransaction.direction == "saida", models.CashTransaction.reversed.is_(False)).scalar() or 0
+    return account.initial_balance + float(entries) - float(exits)
+
+
+def create_receivable(db: Session, sale: models.Sale, customer_id: int, due_date: date, user: models.User):
+    receivable = models.Receivable(sale_id=sale.id, customer_id=customer_id, seller_id=sale.seller_id, due_date=due_date, original_amount=sale.total_value, status="aberto")
+    db.add(receivable)
+    db.flush()
+    if sale.payment_method != "prazo":
+        account = db.query(models.FinancialAccount).filter(models.FinancialAccount.active.is_(True)).first()
+        if account:
+            payment = models.ReceivablePayment(receivable_id=receivable.id, account_id=account.id, amount=sale.total_value, payment_method=sale.payment_method, responsible_id=user.id)
+            db.add(payment); db.flush()
+            db.add(models.CashTransaction(account_id=account.id, direction="entrada", amount=sale.total_value, source_type="receivable_payment", source_id=payment.id, description=f"Recebimento automatico da venda #{sale.id}", responsible_id=user.id))
+            receivable.paid_amount = sale.total_value
+            receivable.status = "pago"
+    return receivable
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "app": settings.app_name}
@@ -556,6 +577,7 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
     if payload.payment_method == "prazo":
         sale.payment_term = models.SalePaymentTerm(due_date=payload.payment_due_date)
     sale.delivery_detail = models.SaleDeliveryDetail(delivery_address=payload.delivery_address.strip())
+    create_receivable(db, sale, customer.id, payload.payment_due_date or datetime.utcnow().date(), user)
     audit(db, user, "create", "sale", sale.id, f"Venda R$ {sale.total_value:.2f}")
     db.commit()
     sale = db.query(models.Sale).options(*sale_load_options()).get(sale.id)
@@ -625,6 +647,20 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
         sale.customer_link.price_table_id = price_table.id
     else:
         sale.customer_link = models.SaleCustomerLink(customer_id=customer.id, price_table_id=price_table.id)
+    receivable = db.query(models.Receivable).options(joinedload(models.Receivable.payments)).filter(models.Receivable.sale_id == sale.id).first()
+    if receivable:
+        receivable.customer_id = customer.id
+        receivable.seller_id = sale.seller_id
+        receivable.due_date = payload.payment_due_date or sale.occurred_at.date()
+        receivable.original_amount = total
+        active_payments = [payment for payment in receivable.payments if not payment.reversed]
+        receivable.paid_amount = sum(payment.amount for payment in active_payments)
+        receivable.status = "pago" if receivable.paid_amount >= total else ("parcial" if receivable.paid_amount else "aberto")
+        if len(active_payments) == 1 and sale.payment_method != "prazo":
+            active_payments[0].amount = total
+            receivable.paid_amount = total
+            receivable.status = "pago"
+            db.query(models.CashTransaction).filter(models.CashTransaction.source_type == "receivable_payment", models.CashTransaction.source_id == active_payments[0].id).update({models.CashTransaction.amount: total})
     audit(db, user, "update", "sale", sale.id, f"Venda alterada para R$ {sale.total_value:.2f}")
     db.commit()
     updated = db.query(models.Sale).options(*sale_load_options()).filter(models.Sale.id == sale.id).first()
@@ -643,6 +679,12 @@ def delete_sale(sale_id: int, db: Session = Depends(get_db), user: models.User =
         item.product.current_stock += item.quantity
         db.add(models.StockMovement(product_id=item.product_id, movement_type="devolucao", quantity=item.quantity, responsible_id=user.id, note=f"Cancelamento da venda #{sale.id}"))
     sale.status = "cancelada"
+    receivable = db.query(models.Receivable).options(joinedload(models.Receivable.payments)).filter(models.Receivable.sale_id == sale.id).first()
+    if receivable:
+        receivable.status = "cancelado"
+        for payment in receivable.payments:
+            payment.reversed = True
+            db.query(models.CashTransaction).filter(models.CashTransaction.source_type == "receivable_payment", models.CashTransaction.source_id == payment.id).update({models.CashTransaction.reversed: True})
     audit(db, user, "cancel", "sale", sale.id, f"Venda cancelada e estoque devolvido: R$ {sale.total_value:.2f}")
     db.commit()
     return {"ok": True, "status": sale.status}
@@ -860,6 +902,110 @@ def delivery_manifest_pdf(manifest_id: int, db: Session = Depends(get_db), user:
     doc.build(story, onFirstPage=draw_page_number, onLaterPages=draw_page_number)
     filename = f"romaneio-{manifest.code}.pdf"
     return Response(stream.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
+@app.get("/api/finance/dashboard")
+def finance_dashboard(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    today = date.today()
+    receivables = db.query(models.Receivable).filter(models.Receivable.status != "cancelado").all()
+    payables = db.query(models.Payable).filter(models.Payable.status != "cancelado").all()
+    accounts = db.query(models.FinancialAccount).filter(models.FinancialAccount.active.is_(True)).all()
+    received_today = db.query(func.coalesce(func.sum(models.CashTransaction.amount), 0)).filter(func.date(models.CashTransaction.occurred_at) == today, models.CashTransaction.direction == "entrada", models.CashTransaction.reversed.is_(False)).scalar() or 0
+    paid_today = db.query(func.coalesce(func.sum(models.CashTransaction.amount), 0)).filter(func.date(models.CashTransaction.occurred_at) == today, models.CashTransaction.direction == "saida", models.CashTransaction.reversed.is_(False)).scalar() or 0
+    return {
+        "cash_balance": sum(financial_account_balance(db, account) for account in accounts),
+        "receivable_open": sum(max(0, row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount - row.paid_amount) for row in receivables),
+        "payable_open": sum(max(0, row.original_amount - row.paid_amount) for row in payables),
+        "received_today": float(received_today), "paid_today": float(paid_today),
+        "overdue_customers": len({row.customer_id for row in receivables if row.due_date < today and row.paid_amount < row.original_amount}),
+    }
+
+
+@app.get("/api/finance/accounts")
+def list_financial_accounts(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    accounts = db.query(models.FinancialAccount).order_by(models.FinancialAccount.name).all()
+    return [{"id": row.id, "name": row.name, "account_type": row.account_type, "initial_balance": row.initial_balance, "active": row.active, "balance": financial_account_balance(db, row)} for row in accounts]
+
+
+@app.post("/api/finance/accounts")
+def create_financial_account(payload: schemas.FinancialAccountCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+    if db.query(models.FinancialAccount).filter(func.lower(models.FinancialAccount.name) == payload.name.lower()).first(): raise HTTPException(400, "Conta financeira ja cadastrada")
+    row = models.FinancialAccount(**payload.model_dump()); db.add(row); db.flush(); audit(db, user, "create", "financial_account", row.id, row.name); db.commit()
+    return {"id": row.id, **payload.model_dump(), "active": True, "balance": row.initial_balance}
+
+
+@app.get("/api/finance/cost-centers", response_model=list[schemas.CostCenterOut])
+def list_cost_centers(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    return db.query(models.CostCenter).filter(models.CostCenter.active.is_(True)).order_by(models.CostCenter.name).all()
+
+
+@app.post("/api/finance/cost-centers", response_model=schemas.CostCenterOut)
+def create_cost_center(payload: schemas.NamedEntityCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+    row = models.CostCenter(name=payload.name.strip()); db.add(row); db.flush(); audit(db, user, "create", "cost_center", row.id, row.name); db.commit(); db.refresh(row); return row
+
+
+@app.get("/api/finance/suppliers", response_model=list[schemas.SupplierOut])
+def list_suppliers(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    return db.query(models.Supplier).filter(models.Supplier.active.is_(True)).order_by(models.Supplier.name).all()
+
+
+@app.post("/api/finance/suppliers", response_model=schemas.SupplierOut)
+def create_supplier(payload: schemas.SupplierCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    row = models.Supplier(**payload.model_dump()); db.add(row); db.flush(); audit(db, user, "create", "supplier", row.id, row.name); db.commit(); db.refresh(row); return row
+
+
+@app.get("/api/finance/receivables")
+def list_receivables(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    rows = db.query(models.Receivable).options(joinedload(models.Receivable.customer), joinedload(models.Receivable.seller)).order_by(models.Receivable.due_date).all()
+    today = date.today()
+    return [{"id": row.id, "sale_id": row.sale_id, "customer_name": row.customer.legal_name, "seller_name": row.seller.name, "due_date": row.due_date, "original_amount": row.original_amount, "paid_amount": row.paid_amount, "balance": max(0, row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount - row.paid_amount), "status": "vencido" if row.status in {"aberto", "parcial"} and row.due_date < today else row.status} for row in rows]
+
+
+@app.post("/api/finance/receivables/{receivable_id}/payments")
+def receive_payment(receivable_id: int, payload: schemas.FinancialPaymentCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    row = db.get(models.Receivable, receivable_id); account = db.get(models.FinancialAccount, payload.account_id)
+    if not row or row.status == "cancelado": raise HTTPException(404, "Titulo a receber nao encontrado")
+    if not account or not account.active: raise HTTPException(404, "Conta financeira nao encontrada")
+    balance = row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount - row.paid_amount
+    if payload.amount > balance + 0.001: raise HTTPException(400, "Valor maior que o saldo em aberto")
+    payment = models.ReceivablePayment(receivable_id=row.id, account_id=account.id, amount=payload.amount, payment_method=payload.payment_method, occurred_at=payload.occurred_at or datetime.utcnow(), note=payload.note, responsible_id=user.id)
+    db.add(payment); db.flush(); row.paid_amount += payload.amount; row.status = "pago" if row.paid_amount >= row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount else "parcial"
+    db.add(models.CashTransaction(account_id=account.id, direction="entrada", amount=payload.amount, occurred_at=payment.occurred_at, source_type="receivable_payment", source_id=payment.id, description=f"Recebimento do titulo #{row.id}", responsible_id=user.id))
+    audit(db, user, "receive", "receivable", row.id, f"Baixa R$ {payload.amount:.2f}"); db.commit(); return {"ok": True, "status": row.status, "paid_amount": row.paid_amount}
+
+
+@app.get("/api/finance/payables")
+def list_payables(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    rows = db.query(models.Payable).options(joinedload(models.Payable.supplier), joinedload(models.Payable.cost_center)).order_by(models.Payable.due_date).all(); today = date.today()
+    return [{"id": row.id, "description": row.description, "supplier_name": row.supplier.name if row.supplier else None, "cost_center_name": row.cost_center.name, "category": row.category, "due_date": row.due_date, "original_amount": row.original_amount, "paid_amount": row.paid_amount, "balance": max(0, row.original_amount - row.paid_amount), "status": "vencido" if row.status in {"aberto", "parcial"} and row.due_date < today else row.status} for row in rows]
+
+
+@app.post("/api/finance/payables")
+def create_payable(payload: schemas.PayableCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    if not db.get(models.CostCenter, payload.cost_center_id): raise HTTPException(404, "Centro de custo nao encontrado")
+    if payload.supplier_id and not db.get(models.Supplier, payload.supplier_id): raise HTTPException(404, "Fornecedor nao encontrado")
+    row = models.Payable(**payload.model_dump()); db.add(row); db.flush(); audit(db, user, "create", "payable", row.id, f"{row.description} R$ {row.original_amount:.2f}"); db.commit(); return {"id": row.id, "status": row.status}
+
+
+@app.post("/api/finance/payables/{payable_id}/payments")
+def pay_payable(payable_id: int, payload: schemas.FinancialPaymentCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    row = db.get(models.Payable, payable_id); account = db.get(models.FinancialAccount, payload.account_id)
+    if not row or row.status == "cancelado": raise HTTPException(404, "Conta a pagar nao encontrada")
+    if not account or not account.active: raise HTTPException(404, "Conta financeira nao encontrada")
+    if payload.amount > row.original_amount - row.paid_amount + 0.001: raise HTTPException(400, "Valor maior que o saldo em aberto")
+    payment = models.PayablePayment(payable_id=row.id, account_id=account.id, amount=payload.amount, occurred_at=payload.occurred_at or datetime.utcnow(), note=payload.note, responsible_id=user.id)
+    db.add(payment); db.flush(); row.paid_amount += payload.amount; row.status = "pago" if row.paid_amount >= row.original_amount else "parcial"
+    db.add(models.CashTransaction(account_id=account.id, direction="saida", amount=payload.amount, occurred_at=payment.occurred_at, source_type="payable_payment", source_id=payment.id, description=f"Pagamento da conta #{row.id}: {row.description}", responsible_id=user.id))
+    audit(db, user, "pay", "payable", row.id, f"Pagamento R$ {payload.amount:.2f}"); db.commit(); return {"ok": True, "status": row.status, "paid_amount": row.paid_amount}
+
+
+@app.get("/api/finance/cash-flow")
+def cash_flow(start: date | None = None, end: date | None = None, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+    query = db.query(models.CashTransaction).options(joinedload(models.CashTransaction.account)).filter(models.CashTransaction.reversed.is_(False))
+    if start: query = query.filter(models.CashTransaction.occurred_at >= datetime.combine(start, time.min))
+    if end: query = query.filter(models.CashTransaction.occurred_at <= datetime.combine(end, time.max))
+    rows = query.order_by(models.CashTransaction.occurred_at.desc()).limit(500).all()
+    return [{"id": row.id, "account_name": row.account.name, "direction": row.direction, "amount": row.amount, "occurred_at": row.occurred_at, "description": row.description} for row in rows]
 
 
 @app.get("/api/dashboard")

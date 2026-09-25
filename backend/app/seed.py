@@ -45,4 +45,14 @@ def seed_data(db):
                 .first()
             )
             customer.ownership = models.CustomerOwnership(seller_id=historical_sale.seller_id if historical_sale else fallback_seller.id)
+    for name in ["Administrativo", "Comercial", "Logistica", "Compras", "Financeiro", "Marketing", "Producao"]:
+        if not db.query(models.CostCenter).filter(models.CostCenter.name == name).first():
+            db.add(models.CostCenter(name=name))
+    if not db.query(models.FinancialAccount).first():
+        db.add(models.FinancialAccount(name="Caixa principal", account_type="caixa", initial_balance=0))
+    db.flush()
+    for sale in db.query(models.Sale).filter(models.Sale.status == "confirmada").all():
+        if sale.customer_link and not db.query(models.Receivable).filter(models.Receivable.sale_id == sale.id).first():
+            due_date = sale.payment_term.due_date if sale.payment_term else sale.occurred_at.date()
+            db.add(models.Receivable(sale_id=sale.id, customer_id=sale.customer_link.customer_id, seller_id=sale.seller_id, due_date=due_date, original_amount=sale.total_value, status="aberto"))
     db.commit()

@@ -166,6 +166,113 @@ class SaleDeliveryDetail(Base):
     sale = relationship("Sale", back_populates="delivery_detail")
 
 
+class CostCenter(Base, TimestampMixin):
+    __tablename__ = "cost_centers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Supplier(Base, TimestampMixin):
+    __tablename__ = "suppliers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(180), index=True)
+    document: Mapped[str | None] = mapped_column(String(20), unique=True, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class FinancialAccount(Base, TimestampMixin):
+    __tablename__ = "financial_accounts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    account_type: Mapped[str] = mapped_column(String(30))
+    initial_balance: Mapped[float] = mapped_column(Float, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Receivable(Base, TimestampMixin):
+    __tablename__ = "receivables"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), unique=True, index=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
+    seller_id: Mapped[int] = mapped_column(ForeignKey("sellers.id"), index=True)
+    due_date: Mapped[date] = mapped_column(Date, index=True)
+    original_amount: Mapped[float] = mapped_column(Float)
+    interest_amount: Mapped[float] = mapped_column(Float, default=0)
+    fine_amount: Mapped[float] = mapped_column(Float, default=0)
+    discount_amount: Mapped[float] = mapped_column(Float, default=0)
+    paid_amount: Mapped[float] = mapped_column(Float, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="aberto", index=True)
+    sale = relationship("Sale")
+    customer = relationship("Customer")
+    seller = relationship("Seller")
+    payments = relationship("ReceivablePayment", cascade="all, delete-orphan", back_populates="receivable")
+
+
+class ReceivablePayment(Base, TimestampMixin):
+    __tablename__ = "receivable_payments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    receivable_id: Mapped[int] = mapped_column(ForeignKey("receivables.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("financial_accounts.id"))
+    amount: Mapped[float] = mapped_column(Float)
+    payment_method: Mapped[str] = mapped_column(String(30))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reversed: Mapped[bool] = mapped_column(Boolean, default=False)
+    responsible_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    receivable = relationship("Receivable", back_populates="payments")
+    account = relationship("FinancialAccount")
+
+
+class Payable(Base, TimestampMixin):
+    __tablename__ = "payables"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    cost_center_id: Mapped[int] = mapped_column(ForeignKey("cost_centers.id"))
+    category: Mapped[str] = mapped_column(String(80), index=True)
+    description: Mapped[str] = mapped_column(String(200))
+    competence_date: Mapped[date] = mapped_column(Date)
+    due_date: Mapped[date] = mapped_column(Date, index=True)
+    original_amount: Mapped[float] = mapped_column(Float)
+    paid_amount: Mapped[float] = mapped_column(Float, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="aberto", index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    supplier = relationship("Supplier")
+    cost_center = relationship("CostCenter")
+    payments = relationship("PayablePayment", cascade="all, delete-orphan", back_populates="payable")
+
+
+class PayablePayment(Base, TimestampMixin):
+    __tablename__ = "payable_payments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    payable_id: Mapped[int] = mapped_column(ForeignKey("payables.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("financial_accounts.id"))
+    amount: Mapped[float] = mapped_column(Float)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reversed: Mapped[bool] = mapped_column(Boolean, default=False)
+    responsible_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    payable = relationship("Payable", back_populates="payments")
+    account = relationship("FinancialAccount")
+
+
+class CashTransaction(Base, TimestampMixin):
+    __tablename__ = "cash_transactions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("financial_accounts.id"), index=True)
+    direction: Mapped[str] = mapped_column(String(10), index=True)
+    amount: Mapped[float] = mapped_column(Float)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    source_type: Mapped[str] = mapped_column(String(40))
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    description: Mapped[str] = mapped_column(String(240))
+    reversed: Mapped[bool] = mapped_column(Boolean, default=False)
+    responsible_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    account = relationship("FinancialAccount")
+
+
 class DeliveryManifest(Base, TimestampMixin):
     __tablename__ = "delivery_manifests"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
