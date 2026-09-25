@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS sale_customer_links (
 CREATE TABLE IF NOT EXISTS sale_payment_terms (
     sale_id INTEGER PRIMARY KEY REFERENCES sales(id), due_date DATE NOT NULL
 );
+CREATE TABLE IF NOT EXISTS customer_ownerships (
+    customer_id INTEGER PRIMARY KEY REFERENCES customers(id), seller_id INTEGER NOT NULL REFERENCES sellers(id)
+);
+CREATE TABLE IF NOT EXISTS sale_delivery_details (
+    sale_id INTEGER PRIMARY KEY REFERENCES sales(id), delivery_address VARCHAR(300) NOT NULL
+);
 CREATE INDEX IF NOT EXISTS ix_price_table_items_table ON price_table_items(price_table_id);
 CREATE INDEX IF NOT EXISTS ix_customers_cnpj ON customers(cnpj);
 CREATE INDEX IF NOT EXISTS ix_sale_customer_links_customer ON sale_customer_links(customer_id);

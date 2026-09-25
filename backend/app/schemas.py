@@ -111,16 +111,18 @@ class CustomerBase(BaseModel):
 
 
 class CustomerCreate(CustomerBase):
-    pass
+    owner_seller_id: int | None = None
 
 
 class CustomerUpdate(CustomerBase):
-    pass
+    owner_seller_id: int
 
 
 class CustomerOut(CustomerBase):
     id: int
     price_table_name: str | None = None
+    owner_seller_id: int | None = None
+    owner_seller_name: str | None = None
 
 
 class MovementCreate(BaseModel):
@@ -189,6 +191,7 @@ class SaleCreate(BaseModel):
     customer_phone: str | None = None
     payment_method: str
     payment_due_date: date | None = None
+    delivery_address: str = Field(min_length=3, max_length=300)
     total_value: float | None = None
     items: list[SaleItemCreate]
 
@@ -206,6 +209,7 @@ class SaleUpdate(BaseModel):
     customer_phone: str | None = None
     payment_method: str
     payment_due_date: date | None = None
+    delivery_address: str = Field(min_length=3, max_length=300)
     total_value: float | None = None
     items: list[SaleItemCreate] = Field(min_length=1)
 
@@ -238,6 +242,7 @@ class SaleOut(BaseModel):
     total_value: float
     payment_method: str
     payment_due_date: date | None = None
+    delivery_address: str | None = None
     status: str
     items: list[SaleItemOut]
 

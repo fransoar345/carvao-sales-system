@@ -51,7 +51,7 @@ function App() {
   const tabs = [
     ["dashboard", "Dashboard", BarChart3, ["admin", "gerente", "vendedor"]],
     ["sale", "Venda", ShoppingCart, ["admin", "gerente", "vendedor"]],
-    ["customers", "Clientes", Building2, ["admin", "gerente"]],
+    ["customers", "Clientes", Building2, ["admin"]],
     ["prices", "Tabelas", Tags, ["admin", "gerente"]],
     ["products", "Produtos", Boxes, ["admin", "gerente"]],
     ["stock", "Estoque", PackagePlus, ["admin", "gerente"]],
@@ -469,10 +469,11 @@ const emptyCustomer = {
   phone: "",
   email: "",
   price_table_id: "",
+  owner_seller_id: "",
   active: true,
 };
 
-function CustomerFields({ form, setForm, tables, compact = false }) {
+function CustomerFields({ form, setForm, tables, sellers = [], showOwner = false, compact = false }) {
   return (
     <div className={compact ? "customer-fields compact" : "customer-fields"}>
       <label className="field">
@@ -516,6 +517,15 @@ function CustomerFields({ form, setForm, tables, compact = false }) {
             ))}
         </select>
       </label>
+      {showOwner && (
+        <label className="field">
+          <span>Vendedor responsavel</span>
+          <select value={form.owner_seller_id || ""} onChange={(e) => setForm({ ...form, owner_seller_id: e.target.value })} required>
+            <option value="">Selecione o vendedor</option>
+            {sellers.filter((seller) => seller.active).map((seller) => <option key={seller.id} value={seller.id}>{seller.name}</option>)}
+          </select>
+        </label>
+      )}
     </div>
   );
 }
@@ -525,6 +535,7 @@ function Customers({ api }) {
   const [message, setMessage] = useState("");
   const customersLoad = useLoad(api, () => api.call("/customers"), []);
   const tables = useLoad(api, () => api.call("/price-tables"), []).data || [];
+  const sellers = useLoad(api, () => api.call("/sellers"), []).data || [];
   async function save(e) {
     e.preventDefault();
     setMessage("");
@@ -532,6 +543,7 @@ function Customers({ api }) {
       const payload = {
         ...form,
         price_table_id: form.price_table_id ? Number(form.price_table_id) : null,
+        owner_seller_id: Number(form.owner_seller_id),
       };
       await api.call(form.id ? `/customers/${form.id}` : "/customers", {
         method: form.id ? "PUT" : "POST",
@@ -544,13 +556,13 @@ function Customers({ api }) {
       setMessage(error.message);
     }
   }
-  const list = (customersLoad.data || []).map((c) => <Row key={c.id} title={c.legal_name} meta={`CNPJ ${c.cnpj} · ${c.price_table_name || "Tabela padrao"} · ${c.phone || c.email}`} onEdit={() => setForm({ ...c, price_table_id: c.price_table_id || "" })} />);
+  const list = (customersLoad.data || []).map((c) => <Row key={c.id} title={c.legal_name} meta={`CNPJ ${c.cnpj} · Vendedor: ${c.owner_seller_name || "nao definido"} · ${c.price_table_name || "Tabela padrao"} · ${c.phone || c.email}`} onEdit={() => setForm({ ...c, price_table_id: c.price_table_id || "", owner_seller_id: c.owner_seller_id || "" })} />);
   return (
     <CrudLayout
       form={
         <form className="panel form" onSubmit={save}>
           <h2>{form.id ? "Alterar cliente" : "Cadastro de cliente"}</h2>
-          <CustomerFields form={form} setForm={setForm} tables={tables} />
+          <CustomerFields form={form} setForm={setForm} tables={tables} sellers={sellers} showOwner />
           <button className="primary">
             <Save size={16} /> Salvar cliente
           </button>
@@ -675,6 +687,8 @@ function Sales({ api, user }) {
     quantity: 1,
     payment_method: "pix",
     payment_due_date: "",
+    delivery_address: "",
+    manual_address: false,
   };
   const [form, setForm] = useState(emptySale);
   const [editingId, setEditingId] = useState(null);
@@ -691,6 +705,7 @@ function Sales({ api, user }) {
   const priceTable = tables.find((t) => t.id === (customer?.price_table_id || tables.find((x) => x.is_default)?.id));
   const unitPrice = priceTable?.items.find((i) => i.product_id === Number(form.product_id))?.price;
   const total = unitPrice != null ? unitPrice * form.quantity : 0;
+  const customerAddress = customer ? `${customer.address}${customer.reference_point ? ` - Referencia: ${customer.reference_point}` : ""}` : "";
   async function save(e) {
     e.preventDefault();
     setMessage("");
@@ -699,6 +714,7 @@ function Sales({ api, user }) {
       customer_id: Number(form.customer_id),
       payment_method: form.payment_method,
       payment_due_date: form.payment_method === "prazo" ? form.payment_due_date : null,
+      delivery_address: form.delivery_address,
       items: [
         {
           product_id: Number(form.product_id),
@@ -730,6 +746,8 @@ function Sales({ api, user }) {
       quantity: item.quantity,
       payment_method: sale.payment_method,
       payment_due_date: sale.payment_due_date || "",
+      delivery_address: sale.delivery_address || "",
+      manual_address: false,
     });
     setMessage(`Editando venda #${sale.id}.`);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -759,6 +777,7 @@ function Sales({ api, user }) {
         body: JSON.stringify({
           ...customerForm,
           price_table_id: customerForm.price_table_id ? Number(customerForm.price_table_id) : null,
+          owner_seller_id: user.role === "admin" ? Number(customerForm.owner_seller_id || form.seller_id) : undefined,
         }),
       });
       await customersLoad.reload();
@@ -779,7 +798,7 @@ function Sales({ api, user }) {
         {user.role !== "vendedor" && (
           <label className="field">
             <span>Vendedor</span>
-            <select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value })} required>
+            <select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value, customer_id: "", delivery_address: "", manual_address: false })} required>
               <option value="">Selecione</option>
               {sellers
                 .filter((s) => s.active)
@@ -793,10 +812,10 @@ function Sales({ api, user }) {
         )}
         <label className="field">
           <span>Cliente</span>
-          <select value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value, product_id: "" })} required>
+          <select value={form.customer_id} onChange={(e) => { const selectedCustomer = (customersLoad.data || []).find((c) => c.id === Number(e.target.value)); setForm({ ...form, customer_id: e.target.value, product_id: "", delivery_address: selectedCustomer ? `${selectedCustomer.address}${selectedCustomer.reference_point ? ` - Referencia: ${selectedCustomer.reference_point}` : ""}` : "", manual_address: false }); }} required>
             <option value="">Selecione o cliente</option>
             {(customersLoad.data || [])
-              .filter((c) => c.active)
+              .filter((c) => c.active && (user.role === "vendedor" || !form.seller_id || c.owner_seller_id === Number(form.seller_id)))
               .map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.legal_name} · {c.cnpj}
@@ -804,9 +823,9 @@ function Sales({ api, user }) {
               ))}
           </select>
         </label>
-        <button type="button" onClick={() => setShowCustomer(!showCustomer)}>
+        {user.role !== "gerente" && <button type="button" onClick={() => setShowCustomer(!showCustomer)}>
           <UserPlus size={16} /> {showCustomer ? "Fechar cadastro" : "Cadastrar novo cliente"}
-        </button>
+        </button>}
         <label className="field">
           <span>Tabela aplicada</span>
           <input value={priceTable?.name || "Selecione um cliente"} readOnly />
@@ -826,6 +845,13 @@ function Sales({ api, user }) {
                 );
               })}
           </select>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={form.manual_address} onChange={(e) => setForm({ ...form, manual_address: e.target.checked, delivery_address: e.target.checked ? form.delivery_address : customerAddress })} /> Preencher endereco manualmente
+        </label>
+        <label className="field">
+          <span>Endereco de entrega</span>
+          <textarea value={form.delivery_address} onChange={(e) => setForm({ ...form, delivery_address: e.target.value })} readOnly={!form.manual_address} required />
         </label>
         <label className="field">
           <span>Quantidade</span>
@@ -863,7 +889,7 @@ function Sales({ api, user }) {
       {showCustomer && (
         <form className="panel form inline-customer" onSubmit={createCustomer}>
           <h2>Novo cliente</h2>
-          <CustomerFields form={customerForm} setForm={setCustomerForm} tables={tables} compact />
+          <CustomerFields form={customerForm} setForm={setCustomerForm} tables={tables} sellers={sellers} showOwner={user.role === "admin"} compact />
           <button className="primary">
             <Save size={16} /> Cadastrar e selecionar
           </button>
@@ -920,7 +946,7 @@ function Deliveries({ api, token }) {
       if (next[sale.id]) delete next[sale.id];
       else
         next[sale.id] = {
-          delivery_address: "",
+          delivery_address: sale.delivery_address || "",
           delivery_order: Object.keys(current).length + 1,
         };
       return next;

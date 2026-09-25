@@ -34,4 +34,15 @@ def seed_data(db):
     for product in db.query(models.Product).all():
         if product.id not in existing:
             default_table.items.append(models.PriceTableItem(product_id=product.id, price=product.sale_price))
+    fallback_seller = db.query(models.Seller).filter(models.Seller.active.is_(True)).first()
+    for customer in db.query(models.Customer).all():
+        if not customer.ownership and fallback_seller:
+            historical_sale = (
+                db.query(models.Sale)
+                .join(models.SaleCustomerLink)
+                .filter(models.SaleCustomerLink.customer_id == customer.id)
+                .order_by(models.Sale.occurred_at)
+                .first()
+            )
+            customer.ownership = models.CustomerOwnership(seller_id=historical_sale.seller_id if historical_sale else fallback_seller.id)
     db.commit()

@@ -57,6 +57,15 @@ class Customer(Base, TimestampMixin):
     price_table_id: Mapped[int | None] = mapped_column(ForeignKey("price_tables.id"), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     price_table = relationship("PriceTable")
+    ownership = relationship("CustomerOwnership", cascade="all, delete-orphan", back_populates="customer", uselist=False)
+
+
+class CustomerOwnership(Base):
+    __tablename__ = "customer_ownerships"
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), primary_key=True)
+    seller_id: Mapped[int] = mapped_column(ForeignKey("sellers.id"), index=True)
+    customer = relationship("Customer", back_populates="ownership")
+    seller = relationship("Seller")
 
 
 class StockMovement(Base, TimestampMixin):
@@ -118,6 +127,7 @@ class Sale(Base, TimestampMixin):
     items = relationship("SaleItem", cascade="all, delete-orphan", back_populates="sale")
     customer_link = relationship("SaleCustomerLink", cascade="all, delete-orphan", back_populates="sale", uselist=False)
     payment_term = relationship("SalePaymentTerm", cascade="all, delete-orphan", back_populates="sale", uselist=False)
+    delivery_detail = relationship("SaleDeliveryDetail", cascade="all, delete-orphan", back_populates="sale", uselist=False)
 
 
 class SaleItem(Base):
@@ -147,6 +157,13 @@ class SalePaymentTerm(Base):
     sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), primary_key=True)
     due_date: Mapped[date] = mapped_column(Date)
     sale = relationship("Sale", back_populates="payment_term")
+
+
+class SaleDeliveryDetail(Base):
+    __tablename__ = "sale_delivery_details"
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), primary_key=True)
+    delivery_address: Mapped[str] = mapped_column(String(300))
+    sale = relationship("Sale", back_populates="delivery_detail")
 
 
 class DeliveryManifest(Base, TimestampMixin):

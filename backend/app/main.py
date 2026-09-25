@@ -92,6 +92,7 @@ def sale_to_schema(sale: models.Sale) -> schemas.SaleOut:
         total_value=sale.total_value,
         payment_method=sale.payment_method,
         payment_due_date=sale.payment_term.due_date if sale.payment_term else None,
+        delivery_address=sale.delivery_detail.delivery_address if sale.delivery_detail else (link.customer.address if link else None),
         status=sale.status,
         items=[
             schemas.SaleItemOut(
@@ -114,6 +115,7 @@ def sale_load_options():
         joinedload(models.Sale.customer_link).joinedload(models.SaleCustomerLink.customer),
         joinedload(models.Sale.customer_link).joinedload(models.SaleCustomerLink.price_table),
         joinedload(models.Sale.payment_term),
+        joinedload(models.Sale.delivery_detail),
     )
 
 
@@ -129,15 +131,19 @@ def customer_to_schema(row: models.Customer) -> schemas.CustomerOut:
         id=row.id, cnpj=row.cnpj, legal_name=row.legal_name, state_registration=row.state_registration,
         address=row.address, reference_point=row.reference_point, phone=row.phone, email=row.email,
         price_table_id=row.price_table_id, price_table_name=row.price_table.name if row.price_table else None, active=row.active,
+        owner_seller_id=row.ownership.seller_id if row.ownership else None,
+        owner_seller_name=row.ownership.seller.name if row.ownership else None,
     )
 
 
-def resolve_customer_prices(db: Session, customer_id: int | None, item_ids: list[int]):
+def resolve_customer_prices(db: Session, customer_id: int | None, seller_id: int, item_ids: list[int]):
     if not customer_id:
         raise HTTPException(400, "Selecione ou cadastre um cliente")
-    customer = db.query(models.Customer).options(joinedload(models.Customer.price_table)).filter(models.Customer.id == customer_id).first()
+    customer = db.query(models.Customer).options(joinedload(models.Customer.price_table), joinedload(models.Customer.ownership)).filter(models.Customer.id == customer_id).first()
     if not customer or not customer.active:
         raise HTTPException(404, "Cliente nao encontrado")
+    if not customer.ownership or customer.ownership.seller_id != seller_id:
+        raise HTTPException(403, "Este cliente pertence a outro vendedor")
     price_table = customer.price_table or db.query(models.PriceTable).filter(models.PriceTable.is_default.is_(True), models.PriceTable.active.is_(True)).first()
     if not price_table or not price_table.active:
         raise HTTPException(400, "Cliente sem tabela de precos ativa")
@@ -332,27 +338,38 @@ def update_price_table(table_id: int, payload: schemas.PriceTableUpdate, db: Ses
 
 @app.get("/api/customers", response_model=list[schemas.CustomerOut])
 def list_customers(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    rows = db.query(models.Customer).options(joinedload(models.Customer.price_table)).order_by(models.Customer.legal_name).all()
+    query = db.query(models.Customer).options(joinedload(models.Customer.price_table), joinedload(models.Customer.ownership).joinedload(models.CustomerOwnership.seller))
+    if user.role == "vendedor":
+        query = query.join(models.CustomerOwnership).filter(models.CustomerOwnership.seller_id == user.seller_id)
+    rows = query.order_by(models.Customer.legal_name).all()
     return [customer_to_schema(row) for row in rows]
 
 
 @app.post("/api/customers", response_model=schemas.CustomerOut)
 def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    if user.role == "gerente": raise HTTPException(403, "Somente vendedores e administradores podem cadastrar clientes")
     if db.query(models.Customer).filter(models.Customer.cnpj == payload.cnpj).first(): raise HTTPException(400, "CNPJ ja cadastrado")
     if payload.price_table_id and not db.get(models.PriceTable, payload.price_table_id): raise HTTPException(404, "Tabela de precos nao encontrada")
-    row = models.Customer(**payload.model_dump()); db.add(row); db.flush()
+    owner_seller_id = user.seller_id if user.role == "vendedor" else payload.owner_seller_id
+    if not owner_seller_id or not db.get(models.Seller, owner_seller_id): raise HTTPException(400, "Selecione o vendedor responsavel")
+    customer_data = payload.model_dump(exclude={"owner_seller_id"})
+    row = models.Customer(**customer_data); db.add(row); db.flush()
+    row.ownership = models.CustomerOwnership(seller_id=owner_seller_id)
     audit(db, user, "create", "customer", row.id, row.legal_name); db.commit(); db.refresh(row)
     return customer_to_schema(row)
 
 
 @app.put("/api/customers/{customer_id}", response_model=schemas.CustomerOut)
-def update_customer(customer_id: int, payload: schemas.CustomerUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def update_customer(customer_id: int, payload: schemas.CustomerUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
     row = db.get(models.Customer, customer_id)
     if not row: raise HTTPException(404, "Cliente nao encontrado")
     duplicate = db.query(models.Customer).filter(models.Customer.cnpj == payload.cnpj, models.Customer.id != customer_id).first()
     if duplicate: raise HTTPException(400, "CNPJ ja cadastrado")
     if payload.price_table_id and not db.get(models.PriceTable, payload.price_table_id): raise HTTPException(404, "Tabela de precos nao encontrada")
-    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    if not db.get(models.Seller, payload.owner_seller_id): raise HTTPException(404, "Vendedor responsavel nao encontrado")
+    for key, value in payload.model_dump(exclude={"owner_seller_id"}).items(): setattr(row, key, value)
+    if row.ownership: row.ownership.seller_id = payload.owner_seller_id
+    else: row.ownership = models.CustomerOwnership(seller_id=payload.owner_seller_id)
     audit(db, user, "update", "customer", row.id, row.legal_name); db.commit(); db.refresh(row)
     return customer_to_schema(row)
 
@@ -515,7 +532,7 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
     if not payload.items:
         raise HTTPException(400, "Inclua ao menos um item")
 
-    customer, price_table, prices = resolve_customer_prices(db, payload.customer_id, [item.product_id for item in payload.items])
+    customer, price_table, prices = resolve_customer_prices(db, payload.customer_id, seller_id, [item.product_id for item in payload.items])
     sale = models.Sale(seller_id=seller_id, customer_name=customer.legal_name, customer_phone=customer.phone, payment_method=payload.payment_method, status="confirmada")
     total = 0.0
     touched_products: list[models.Product] = []
@@ -538,6 +555,7 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
     sale.customer_link = models.SaleCustomerLink(customer_id=customer.id, price_table_id=price_table.id)
     if payload.payment_method == "prazo":
         sale.payment_term = models.SalePaymentTerm(due_date=payload.payment_due_date)
+    sale.delivery_detail = models.SaleDeliveryDetail(delivery_address=payload.delivery_address.strip())
     audit(db, user, "create", "sale", sale.id, f"Venda R$ {sale.total_value:.2f}")
     db.commit()
     sale = db.query(models.Sale).options(*sale_load_options()).get(sale.id)
@@ -558,7 +576,7 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     seller = db.get(models.Seller, payload.seller_id)
     if not seller or not seller.active:
         raise HTTPException(404, "Vendedor nao encontrado")
-    customer, price_table, prices = resolve_customer_prices(db, payload.customer_id, [item.product_id for item in payload.items])
+    customer, price_table, prices = resolve_customer_prices(db, payload.customer_id, payload.seller_id, [item.product_id for item in payload.items])
 
     restored_by_product: dict[int, float] = {}
     for old_item in sale.items:
@@ -591,6 +609,8 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     sale.customer_name = customer.legal_name
     sale.customer_phone = customer.phone
     sale.payment_method = payload.payment_method
+    if sale.delivery_detail: sale.delivery_detail.delivery_address = payload.delivery_address.strip()
+    else: sale.delivery_detail = models.SaleDeliveryDetail(delivery_address=payload.delivery_address.strip())
     if payload.payment_method == "prazo":
         if sale.payment_term:
             sale.payment_term.due_date = payload.payment_due_date
