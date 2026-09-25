@@ -9,7 +9,15 @@ const money = (v) =>
     style: "currency",
     currency: "BRL",
   });
-const allowed = (user, permission) => (user?.permissions || []).includes(permission);
+const legacyPermissions = {
+  gerente: ["dashboard.view", "dashboard.view_general", "sales.create", "sales.edit", "sales.cancel", "sales.change_seller", "sales.view_all", "customers.view_all", "products.view", "products.create", "products.edit", "stock.view", "stock.entry", "stock.exit", "stock.adjust", "stock.view_history", "manifests.view", "manifests.create", "manifests.edit", "manifests.cancel", "manifests.start_route", "manifests.finish_route", "manifests.confirm_delivery", "manifests.print", "finance.view_receivables", "finance.view_payables", "finance.view_cash_flow", "finance.create_payables", "finance.settle_titles", "reports.export_pdf", "reports.export_excel", "settings.price_tables"],
+  vendedor: ["dashboard.view", "dashboard.view_own", "sales.create", "sales.view_own", "customers.create", "customers.view_own", "products.view", "reports.view_commission"],
+};
+const allowed = (user, permission) => {
+  if ((user?.permissions || []).length) return user.permissions.includes(permission);
+  if (user?.role === "admin") return true;
+  return (legacyPermissions[user?.role] || []).includes(permission);
+};
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
