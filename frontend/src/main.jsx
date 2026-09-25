@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Building2, Ban, Boxes, CheckCircle2, ClipboardList, Trash2, Download, LogOut, MessageCircle, MapPin, PackagePlus, Play, Printer, ReceiptText, Save, ShoppingCart, Truck, Tags, UserPlus, Users, WalletCards } from "lucide-react";
+import { BarChart3, Building2, Ban, Boxes, CheckCircle2, ClipboardList, Trash2, Download, LogOut, MessageCircle, MapPin, PackagePlus, Play, Printer, ReceiptText, Save, ShieldCheck, ShoppingCart, Truck, Tags, UserPlus, Users, WalletCards } from "lucide-react";
 import "./styles.css";
 
 const API = import.meta.env.VITE_API_URL || "https://carvao-sales-system-production.up.railway.app/api";
@@ -9,6 +9,7 @@ const money = (v) =>
     style: "currency",
     currency: "BRL",
   });
+const allowed = (user, permission) => (user?.permissions || []).includes(permission);
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
@@ -33,6 +34,10 @@ function App() {
     [token],
   );
 
+  useEffect(() => {
+    if (token) api.call("/auth/me").then((current) => { setUser(current); localStorage.setItem("user", JSON.stringify(current)); }).catch(() => logout());
+  }, [token, api]);
+
   function onLogin(data) {
     setToken(data.access_token);
     setUser(data.user);
@@ -48,18 +53,20 @@ function App() {
 
   if (!token) return <Login onLogin={onLogin} />;
 
+  const can = (permission) => (user.permissions || []).includes(permission);
   const tabs = [
-    ["dashboard", "Dashboard", BarChart3, ["admin", "gerente", "vendedor"]],
-    ["sale", "Venda", ShoppingCart, ["admin", "gerente", "vendedor"]],
-    ["customers", "Clientes", Building2, ["admin"]],
-    ["prices", "Tabelas", Tags, ["admin", "gerente"]],
-    ["products", "Produtos", Boxes, ["admin", "gerente"]],
-    ["stock", "Estoque", PackagePlus, ["admin", "gerente"]],
-    ["deliveries", "Romaneios", ClipboardList, ["admin", "gerente"]],
-    ["finance", "Financeiro", WalletCards, ["admin", "gerente"]],
-    ["sellers", "Vendedores", Users, ["admin"]],
-    ["whatsapp", "WhatsApp", MessageCircle, ["admin"]],
-  ].filter((item) => item[3].includes(user.role));
+    ["dashboard", "Dashboard", BarChart3, "dashboard.view"],
+    ["sale", "Venda", ShoppingCart, "sales.create"],
+    ["customers", "Clientes", Building2, "customers.view_all"],
+    ["prices", "Tabelas", Tags, "settings.price_tables"],
+    ["products", "Produtos", Boxes, "products.view"],
+    ["stock", "Estoque", PackagePlus, "stock.view"],
+    ["deliveries", "Romaneios", ClipboardList, "manifests.view"],
+    ["finance", "Financeiro", WalletCards, "finance.view_receivables"],
+    ["sellers", "Vendedores", Users, "users.view"],
+    ["access", "Perfis e Permissoes", ShieldCheck, "users.change_permissions"],
+    ["whatsapp", "Alertas", MessageCircle, "settings.alerts"],
+  ].filter((item) => can(item[3]));
 
   return (
     <div className="app">
@@ -87,7 +94,7 @@ function App() {
           <div>
             <h1>{tabs.find((x) => x[0] === tab)?.[1]}</h1>
             <p>
-              {user.name} · {user.role}
+              {user.name} · {(user.profiles || [user.role]).join(", ")}
             </p>
           </div>
         </header>
@@ -95,11 +102,12 @@ function App() {
         {tab === "sale" && <Sales api={api} user={user} />}
         {tab === "customers" && <Customers api={api} />}
         {tab === "prices" && <PriceTables api={api} />}
-        {tab === "products" && <Products api={api} />}
-        {tab === "stock" && <Stock api={api} />}
+        {tab === "products" && <Products api={api} user={user} />}
+        {tab === "stock" && <Stock api={api} user={user} />}
         {tab === "deliveries" && <Deliveries api={api} token={token} />}
         {tab === "finance" && <Finance api={api} />}
-        {tab === "sellers" && <Sellers api={api} />}
+        {tab === "access" && <><NewAccessUser api={api} /><AccessControl api={api} /></>}
+        {tab === "sellers" && <Sellers api={api} user={user} />}
         {tab === "whatsapp" && <WhatsApp api={api} />}
       </main>
     </div>
@@ -255,7 +263,7 @@ function Panel({ title, children, className = "" }) {
   );
 }
 
-function Products({ api }) {
+function Products({ api, user }) {
   const empty = {
     name: "",
     type: "saco_fechado",
@@ -279,9 +287,9 @@ function Products({ api }) {
   }
   return (
     <CrudLayout
-      form={<ProductForm form={form} setForm={setForm} save={save} />}
+      form={allowed(user, "products.create") || allowed(user, "products.edit") ? <ProductForm form={form} setForm={setForm} save={save} /> : null}
       list={(products || []).map((p) => (
-        <Row key={p.id} title={p.name} meta={`${p.type} · estoque ${p.current_stock} · venda ${money(p.sale_price)}`} onEdit={() => setForm(p)} />
+        <Row key={p.id} title={p.name} meta={`${p.type} · estoque ${p.current_stock} · venda ${money(p.sale_price)}`} onEdit={allowed(user, "products.edit") ? () => setForm(p) : null} />
       ))}
     />
   );
@@ -330,7 +338,7 @@ function ProductForm({ form, setForm, save }) {
   );
 }
 
-function Stock({ api }) {
+function Stock({ api, user }) {
   const [form, setForm] = useState({
     product_id: "",
     movement_type: "entrada",
@@ -352,7 +360,7 @@ function Stock({ api }) {
   return (
     <section className="stock-page">
       <CrudLayout
-        form={
+        form={allowed(user, "stock.entry") || allowed(user, "stock.exit") || allowed(user, "stock.adjust") ?
           <form className="panel form" onSubmit={save}>
             <h2>Entrada/Saida de Estoque</h2>
             <select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required>
@@ -373,7 +381,7 @@ function Stock({ api }) {
             <textarea placeholder="Observacao" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
             <button className="primary">Registrar Movimentacao</button>
           </form>
-        }
+        : null}
         list={(movements || []).map((m) => (
           <Row key={m.id} title={`${m.product_name} · ${m.movement_type}`} meta={`${m.quantity} em ${new Date(m.occurred_at).toLocaleString("pt-BR")} · ${m.note || ""}`} />
         ))}
@@ -387,7 +395,7 @@ function Stock({ api }) {
   );
 }
 
-function Sellers({ api }) {
+function Sellers({ api, user }) {
   const empty = {
     name: "",
     phone: "+55",
@@ -414,7 +422,7 @@ function Sellers({ api }) {
   }
   return (
     <CrudLayout
-      form={
+      form={allowed(user, "users.create") ?
         <form className="panel form" onSubmit={save}>
           <h2>Cadastro de Vendedor</h2>
           <label className="field">
@@ -445,17 +453,17 @@ function Sellers({ api }) {
             <Save size={16} /> Salvar Vendedor
           </button>
         </form>
-      }
+      : null}
       list={(sellers || []).map((s) => (
         <Row
           key={s.id}
           title={s.name}
           meta={`${s.phone} · ${s.email} · ${s.active ? "ativo" : "inativo"}`}
-          actions={
+          actions={allowed(user, "users.deactivate") ?
             <button className="danger" onClick={() => removeSeller(s)}>
               <Trash2 size={16} /> Excluir
             </button>
-          }
+          : null}
         />
       ))}
     />
@@ -779,7 +787,7 @@ function Sales({ api, user }) {
         body: JSON.stringify({
           ...customerForm,
           price_table_id: customerForm.price_table_id ? Number(customerForm.price_table_id) : null,
-          owner_seller_id: user.role === "admin" ? Number(customerForm.owner_seller_id || form.seller_id) : undefined,
+          owner_seller_id: allowed(user, "customers.transfer") ? Number(customerForm.owner_seller_id || form.seller_id) : undefined,
         }),
       });
       await customersLoad.reload();
@@ -791,13 +799,12 @@ function Sales({ api, user }) {
       setMessage(error.message);
     }
   }
-  const canManage = user.role === "admin" || user.role === "gerente";
   const formPanel = (
     <div className="sale-stack">
       <form className="panel form sale-form" onSubmit={save}>
         <h2>{editingId ? `Alterar venda #${editingId}` : "Lancar Venda"}</h2>
         {editingId && <p className="edit-banner">Ao salvar, o estoque anterior sera devolvido e a nova quantidade sera baixada.</p>}
-        {user.role !== "vendedor" && (
+        {allowed(user, "sales.change_seller") && (
           <label className="field">
             <span>Vendedor</span>
             <select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value, customer_id: "", delivery_address: "", manual_address: false })} required>
@@ -817,7 +824,7 @@ function Sales({ api, user }) {
           <select value={form.customer_id} onChange={(e) => { const selectedCustomer = (customersLoad.data || []).find((c) => c.id === Number(e.target.value)); setForm({ ...form, customer_id: e.target.value, product_id: "", delivery_address: selectedCustomer ? `${selectedCustomer.address}${selectedCustomer.reference_point ? ` - Referencia: ${selectedCustomer.reference_point}` : ""}` : "", manual_address: false }); }} required>
             <option value="">Selecione o cliente</option>
             {(customersLoad.data || [])
-              .filter((c) => c.active && (user.role === "vendedor" || !form.seller_id || c.owner_seller_id === Number(form.seller_id)))
+              .filter((c) => c.active && (!allowed(user, "sales.view_all") || !form.seller_id || c.owner_seller_id === Number(form.seller_id)))
               .map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.legal_name} · {c.cnpj}
@@ -825,7 +832,7 @@ function Sales({ api, user }) {
               ))}
           </select>
         </label>
-        {user.role !== "gerente" && <button type="button" onClick={() => setShowCustomer(!showCustomer)}>
+        {allowed(user, "customers.create") && <button type="button" onClick={() => setShowCustomer(!showCustomer)}>
           <UserPlus size={16} /> {showCustomer ? "Fechar cadastro" : "Cadastrar novo cliente"}
         </button>}
         <label className="field">
@@ -891,7 +898,7 @@ function Sales({ api, user }) {
       {showCustomer && (
         <form className="panel form inline-customer" onSubmit={createCustomer}>
           <h2>Novo cliente</h2>
-          <CustomerFields form={customerForm} setForm={setCustomerForm} tables={tables} sellers={sellers} showOwner={user.role === "admin"} compact />
+          <CustomerFields form={customerForm} setForm={setCustomerForm} tables={tables} sellers={sellers} showOwner={allowed(user, "customers.transfer")} compact />
           <button className="primary">
             <Save size={16} /> Cadastrar e selecionar
           </button>
@@ -904,9 +911,9 @@ function Sales({ api, user }) {
       key={sale.id}
       title={`${sale.customer_name || "Cliente antigo"} · ${money(sale.total_value)}`}
       meta={`#${sale.id} · ${sale.seller_name} · ${sale.price_table_name || "preco anterior"} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")} · ${sale.status}`}
-      onEdit={canManage && sale.status === "confirmada" && sale.customer_id ? () => startEdit(sale) : null}
+      onEdit={allowed(user, "sales.edit") && sale.status === "confirmada" && sale.customer_id ? () => startEdit(sale) : null}
       actions={
-        canManage && sale.status === "confirmada" ? (
+        allowed(user, "sales.cancel") && sale.status === "confirmada" ? (
           <button className="danger" onClick={() => removeSale(sale)}>
             <Trash2 size={16} /> Excluir
           </button>
@@ -1165,6 +1172,39 @@ function Deliveries({ api, token }) {
       </div>
     </section>
   );
+}
+
+function NewAccessUser({ api }) {
+  const roles = useLoad(api, () => api.call("/access/roles"), []).data || [];
+  const [form, setForm] = useState({ name: "", email: "", password: "", role_ids: [] });
+  const [message, setMessage] = useState("");
+  async function save(e) { e.preventDefault(); try { await api.call("/access/users", { method: "POST", body: JSON.stringify(form) }); setForm({ name: "", email: "", password: "", role_ids: [] }); setMessage("Usuario criado com sucesso."); } catch (error) { setMessage(error.message); } }
+  return <form className="panel form access-user-create" onSubmit={save}><h2>Novo usuario</h2><div className="user-create-grid"><label className="field"><span>Nome</span><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label><label className="field"><span>E-mail</span><input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required /></label><label className="field"><span>Senha inicial</span><input type="password" minLength={6} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required /></label></div><div className="role-selector">{roles.filter((item) => item.active).map((item) => <label className="check" key={item.id}><input type="checkbox" checked={form.role_ids.includes(item.id)} onChange={() => setForm({ ...form, role_ids: form.role_ids.includes(item.id) ? form.role_ids.filter((id) => id !== item.id) : [...form.role_ids, item.id] })} /> {item.name}</label>)}</div><button className="primary" disabled={!form.role_ids.length}><UserPlus size={16} /> Criar usuario</button>{message && <p className="form-status">{message}</p>}</form>;
+}
+
+function AccessControl({ api }) {
+  const rolesLoad = useLoad(api, () => api.call("/access/roles"), []);
+  const permissionsLoad = useLoad(api, () => api.call("/access/permissions"), []);
+  const usersLoad = useLoad(api, () => api.call("/access/users"), []);
+  const [role, setRole] = useState({ name: "", description: "", active: true, permission_codes: [] });
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [userAccess, setUserAccess] = useState({ role_ids: [], overrides: {} });
+  const [message, setMessage] = useState("");
+  const permissions = permissionsLoad.data || [];
+  const grouped = permissions.reduce((result, permission) => ({ ...result, [permission.module]: [...(result[permission.module] || []), permission] }), {});
+  function editRole(row) { setRole({ id: row.id, name: row.name, description: row.description || "", active: row.active, permission_codes: row.permission_codes }); }
+  function togglePermission(code) { setRole((current) => ({ ...current, permission_codes: current.permission_codes.includes(code) ? current.permission_codes.filter((item) => item !== code) : [...current.permission_codes, code] })); }
+  async function saveRole(e) { e.preventDefault(); setMessage(""); try { await api.call(role.id ? `/access/roles/${role.id}` : "/access/roles", { method: role.id ? "PUT" : "POST", body: JSON.stringify(role) }); setRole({ name: "", description: "", active: true, permission_codes: [] }); rolesLoad.reload(); setMessage("Perfil salvo."); } catch (error) { setMessage(error.message); } }
+  function selectUser(id) { const row = (usersLoad.data || []).find((item) => item.id === Number(id)); setSelectedUserId(id); setUserAccess(row ? { role_ids: row.role_ids, overrides: row.overrides || {} } : { role_ids: [], overrides: {} }); }
+  async function saveUserAccess(e) { e.preventDefault(); try { await api.call(`/access/users/${selectedUserId}`, { method: "PUT", body: JSON.stringify(userAccess) }); usersLoad.reload(); setMessage("Acesso do usuario atualizado."); } catch (error) { setMessage(error.message); } }
+  return <section className="access-page">
+    {message && <p className="panel form-status">{message}</p>}
+    <div className="access-columns">
+      <form className="panel form" onSubmit={saveRole}><h2>{role.id ? "Editar perfil" : "Novo perfil"}</h2><label className="field"><span>Nome</span><input value={role.name} onChange={(e) => setRole({ ...role, name: e.target.value })} required /></label><label className="field"><span>Descricao</span><textarea value={role.description} onChange={(e) => setRole({ ...role, description: e.target.value })} /></label><label className="check"><input type="checkbox" checked={role.active} onChange={(e) => setRole({ ...role, active: e.target.checked })} /> Perfil ativo</label><div className="permission-groups">{Object.entries(grouped).map(([module, items]) => <fieldset key={module}><legend>{module}</legend>{items.map((permission) => <label className="check" key={permission.code}><input type="checkbox" checked={role.permission_codes.includes(permission.code)} onChange={() => togglePermission(permission.code)} /> {permission.name}</label>)}</fieldset>)}</div><button className="primary"><Save size={16} /> Salvar perfil</button></form>
+      <div className="panel"><h2>Perfis cadastrados</h2>{(rolesLoad.data || []).map((row) => <Row key={row.id} title={row.name} meta={`${row.permission_codes.length} permissoes · ${row.active ? "ativo" : "inativo"}`} onEdit={() => editRole(row)} />)}</div>
+    </div>
+    <form className="panel form" onSubmit={saveUserAccess}><h2>Perfis e permissoes individuais do usuario</h2><label className="field"><span>Usuario</span><select value={selectedUserId} onChange={(e) => selectUser(e.target.value)} required><option value="">Selecione</option>{(usersLoad.data || []).map((row) => <option key={row.id} value={row.id}>{row.name} · {row.email}</option>)}</select></label>{selectedUserId && <><div className="role-selector">{(rolesLoad.data || []).filter((item) => item.active).map((item) => <label className="check" key={item.id}><input type="checkbox" checked={userAccess.role_ids.includes(item.id)} onChange={() => setUserAccess({ ...userAccess, role_ids: userAccess.role_ids.includes(item.id) ? userAccess.role_ids.filter((id) => id !== item.id) : [...userAccess.role_ids, item.id] })} /> {item.name}</label>)}</div><label className="field"><span>Excecao individual</span><select onChange={(e) => { const [code, value] = e.target.value.split("|"); if (code) setUserAccess({ ...userAccess, overrides: { ...userAccess.overrides, [code]: value === "allow" } }); }} defaultValue=""><option value="">Adicionar permissao ou bloqueio</option>{permissions.flatMap((permission) => [<option key={`${permission.code}-allow`} value={`${permission.code}|allow`}>Permitir: {permission.name}</option>, <option key={`${permission.code}-deny`} value={`${permission.code}|deny`}>Bloquear: {permission.name}</option>])}</select></label><div className="override-list">{Object.entries(userAccess.overrides).map(([code, allowed]) => <button type="button" key={code} onClick={() => { const next = { ...userAccess.overrides }; delete next[code]; setUserAccess({ ...userAccess, overrides: next }); }}>{allowed ? "Permitido" : "Bloqueado"}: {code} ×</button>)}</div><button className="primary"><Save size={16} /> Salvar acesso do usuario</button></>}</form>
+  </section>;
 }
 
 function Finance({ api }) {

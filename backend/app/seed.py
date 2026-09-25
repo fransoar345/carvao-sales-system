@@ -1,5 +1,6 @@
 from .auth import hash_password
 from . import models
+from .permissions import PERMISSION_NAMES, ROLE_PERMISSIONS
 
 
 def seed_data(db):
@@ -55,4 +56,26 @@ def seed_data(db):
         if sale.customer_link and not db.query(models.Receivable).filter(models.Receivable.sale_id == sale.id).first():
             due_date = sale.payment_term.due_date if sale.payment_term else sale.occurred_at.date()
             db.add(models.Receivable(sale_id=sale.id, customer_id=sale.customer_link.customer_id, seller_id=sale.seller_id, due_date=due_date, original_amount=sale.total_value, status="aberto"))
+    db.flush()
+    permission_rows = {}
+    for code, name in PERMISSION_NAMES.items():
+        row = db.query(models.Permission).filter(models.Permission.code == code).first()
+        if not row:
+            row = models.Permission(code=code, module=code.split(".", 1)[0], name=name)
+            db.add(row)
+            db.flush()
+        permission_rows[code] = row
+    role_rows = {}
+    for role_name, codes in ROLE_PERMISSIONS.items():
+        role = db.query(models.AccessRole).filter(models.AccessRole.name == role_name).first()
+        if not role:
+            role = models.AccessRole(name=role_name, description=f"Perfil padrao {role_name}", active=True, system=True)
+            db.add(role)
+            db.flush()
+            role.permissions = [permission_rows[code] for code in codes]
+        role_rows[role_name] = role
+    legacy_names = {"admin": "Administrador", "gerente": "Gerente", "vendedor": "Vendedor"}
+    for user in db.query(models.User).all():
+        if not user.access_roles and user.role in legacy_names:
+            user.access_roles.append(role_rows[legacy_names[user.role]])
     db.commit()

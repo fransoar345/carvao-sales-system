@@ -98,6 +98,15 @@ textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
 .finance-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .finance-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .finance-subtitle { margin-top: 14px; padding-top: 16px; border-top: 1px solid #edf1eb; }
+.access-page { display: grid; gap: 16px; }
+.access-columns { display: grid; grid-template-columns: minmax(360px, 1.2fr) minmax(300px, .8fr); gap: 16px; align-items: start; }
+.permission-groups { display: grid; gap: 10px; max-height: 520px; overflow: auto; padding-right: 4px; }
+.permission-groups fieldset { border: 1px solid #dfe6dd; border-radius: 8px; display: grid; gap: 7px; padding: 12px; }
+.permission-groups legend { font-weight: 800; text-transform: capitalize; padding: 0 5px; }
+.role-selector, .override-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.access-user-create { margin-bottom: 16px; }
+.user-create-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
+.override-list button { min-height: 36px; border-radius: 8px; padding: 0 10px; background: #e6ece5; }
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
   .sidebar { position: sticky; top: 0; z-index: 2; padding: 12px; }
@@ -116,5 +125,7 @@ textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
   header h1 { font-size: 22px; }
   .customer-fields.compact, .price-grid { grid-template-columns: 1fr; }
   .finance-columns, .finance-metrics { grid-template-columns: 1fr; }
+  .access-columns { grid-template-columns: 1fr; }
+  .user-create-grid { grid-template-columns: 1fr; }
   .customer-fields.compact .field:nth-child(4), .customer-fields.compact .field:nth-child(5) { grid-column: auto; }
 }

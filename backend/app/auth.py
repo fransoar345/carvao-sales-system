@@ -8,7 +8,7 @@ from typing import Iterable
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from .config import get_settings
 from .database import get_db
@@ -49,10 +49,34 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         user_id = int(payload["sub"])
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido") from exc
-    user = db.get(models.User, user_id)
+    user = db.query(models.User).options(joinedload(models.User.access_roles).joinedload(models.AccessRole.permissions), joinedload(models.User.permission_overrides).joinedload(models.UserPermissionOverride.permission)).filter(models.User.id == user_id).first()
     if not user or not user.active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario inativo")
     return user
+
+
+def permission_codes(user: models.User) -> set[str]:
+    codes = {permission.code for role in user.access_roles if role.active for permission in role.permissions}
+    for override in user.permission_overrides:
+        if override.allowed:
+            codes.add(override.permission.code)
+        else:
+            codes.discard(override.permission.code)
+    return codes
+
+
+def has_permission(user: models.User, code: str) -> bool:
+    return code in permission_codes(user)
+
+
+def require_permission(*codes: str, match_all: bool = True):
+    def checker(user: models.User = Depends(get_current_user)) -> models.User:
+        granted = permission_codes(user)
+        allowed = all(code in granted for code in codes) if match_all else any(code in granted for code in codes)
+        if not allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissao insuficiente")
+        return user
+    return checker
 
 
 def require_roles(*roles: str):

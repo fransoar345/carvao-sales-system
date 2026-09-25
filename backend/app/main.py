@@ -1,9 +1,10 @@
 import asyncio
+from contextvars import ContextVar
 from datetime import date, datetime, time, timedelta
 from io import BytesIO
 from xml.sax.saxutils import escape
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from openpyxl import Workbook
@@ -17,7 +18,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from . import models, schemas
-from .auth import create_access_token, get_current_user, hash_password, require_roles, verify_password
+from .auth import create_access_token, get_current_user, hash_password, has_permission, permission_codes, require_permission, require_roles, verify_password
 from .config import get_settings
 from .database import Base, engine, get_db
 from .seed import seed_data
@@ -36,6 +37,16 @@ app.add_middleware(
 )
 
 daily_summary_sent: set[date] = set()
+request_ip: ContextVar[str | None] = ContextVar("request_ip", default=None)
+
+
+@app.middleware("http")
+async def capture_request_context(request: Request, call_next):
+    token = request_ip.set(request.client.host if request.client else None)
+    try:
+        return await call_next(request)
+    finally:
+        request_ip.reset(token)
 
 
 @app.on_event("startup")
@@ -67,7 +78,14 @@ async def daily_summary_worker():
 
 
 def audit(db: Session, user: models.User | None, action: str, entity: str, entity_id: int | None, details: str = ""):
-    db.add(models.AuditLog(actor_id=user.id if user else None, action=action, entity=entity, entity_id=entity_id, details=details))
+    log = models.AuditLog(actor_id=user.id if user else None, action=action, entity=entity, entity_id=entity_id, details=details)
+    db.add(log)
+    db.flush()
+    db.add(models.SecurityAuditDetail(audit_log_id=log.id, profiles=", ".join(role.name for role in user.access_roles) if user else None, ip_address=request_ip.get(), module=entity, new_value=details or None))
+
+
+def user_to_schema(user: models.User) -> schemas.UserOut:
+    return schemas.UserOut(id=user.id, name=user.name, email=user.email, role=user.role, seller_id=user.seller_id, active=user.active, profiles=[role.name for role in user.access_roles if role.active], permissions=sorted(permission_codes(user)))
 
 
 def movement_delta(kind: str, quantity: float) -> float:
@@ -248,25 +266,103 @@ def health():
 
 @app.post("/api/auth/login", response_model=schemas.Token)
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == form.username).first()
+    user = db.query(models.User).options(joinedload(models.User.access_roles).joinedload(models.AccessRole.permissions), joinedload(models.User.permission_overrides).joinedload(models.UserPermissionOverride.permission)).filter(models.User.email == form.username).first()
     if not user or not verify_password(form.password, user.password_hash):
         raise HTTPException(401, "Login ou senha invalidos")
     token = create_access_token(user)
-    return {"access_token": token, "user": schemas.UserOut.model_validate(user).model_dump()}
+    return {"access_token": token, "user": user_to_schema(user).model_dump()}
 
 
 @app.get("/api/auth/me", response_model=schemas.UserOut)
 def me(user: models.User = Depends(get_current_user)):
-    return user
+    return user_to_schema(user)
+
+
+@app.get("/api/access/permissions")
+def list_permissions(db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.view"))):
+    rows = db.query(models.Permission).order_by(models.Permission.module, models.Permission.name).all()
+    return [{"id": row.id, "code": row.code, "module": row.module, "name": row.name, "description": row.description} for row in rows]
+
+
+@app.post("/api/access/permissions")
+def create_permission(payload: schemas.PermissionCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.change_permissions"))):
+    if db.query(models.Permission).filter(models.Permission.code == payload.code).first(): raise HTTPException(400, "Permissao ja cadastrada")
+    row = models.Permission(**payload.model_dump()); db.add(row); db.flush(); audit(db, user, "create", "permission", row.id, row.code); db.commit()
+    return {"id": row.id, **payload.model_dump()}
+
+
+@app.get("/api/access/roles")
+def list_access_roles(db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.view"))):
+    rows = db.query(models.AccessRole).options(joinedload(models.AccessRole.permissions)).order_by(models.AccessRole.name).all()
+    return [{"id": row.id, "name": row.name, "description": row.description, "active": row.active, "system": row.system, "permission_codes": sorted(permission.code for permission in row.permissions)} for row in rows]
+
+
+def apply_role_payload(db: Session, row: models.AccessRole, payload):
+    permissions = db.query(models.Permission).filter(models.Permission.code.in_(payload.permission_codes)).all()
+    if len(permissions) != len(set(payload.permission_codes)): raise HTTPException(400, "Uma ou mais permissoes nao existem")
+    row.name = payload.name.strip(); row.description = payload.description; row.permissions = permissions
+    if hasattr(payload, "active"): row.active = payload.active
+
+
+@app.post("/api/access/roles")
+def create_access_role(payload: schemas.AccessRoleCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.change_permissions"))):
+    if db.query(models.AccessRole).filter(func.lower(models.AccessRole.name) == payload.name.lower()).first(): raise HTTPException(400, "Perfil ja cadastrado")
+    row = models.AccessRole(name=payload.name, description=payload.description); db.add(row); db.flush(); apply_role_payload(db, row, payload); audit(db, user, "create", "access_role", row.id, row.name); db.commit()
+    return {"id": row.id, "name": row.name, "description": row.description, "active": row.active, "permission_codes": sorted(permission.code for permission in row.permissions)}
+
+
+@app.put("/api/access/roles/{role_id}")
+def update_access_role(role_id: int, payload: schemas.AccessRoleUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.change_permissions"))):
+    row = db.query(models.AccessRole).options(joinedload(models.AccessRole.permissions)).filter(models.AccessRole.id == role_id).first()
+    if not row: raise HTTPException(404, "Perfil nao encontrado")
+    old = f"{row.name}: {','.join(permission.code for permission in row.permissions)}"; apply_role_payload(db, row, payload)
+    audit(db, user, "update", "access_role", row.id, f"Antes={old}; Depois={row.name}: {','.join(payload.permission_codes)}"); db.commit()
+    return {"id": row.id, "name": row.name, "description": row.description, "active": row.active, "permission_codes": sorted(permission.code for permission in row.permissions)}
+
+
+@app.get("/api/access/users")
+def list_access_users(db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.view"))):
+    rows = db.query(models.User).options(joinedload(models.User.access_roles).joinedload(models.AccessRole.permissions), joinedload(models.User.permission_overrides).joinedload(models.UserPermissionOverride.permission)).order_by(models.User.name).all()
+    return [{"id": row.id, "name": row.name, "email": row.email, "active": row.active, "role_ids": [role.id for role in row.access_roles], "profiles": [role.name for role in row.access_roles], "overrides": {override.permission.code: override.allowed for override in row.permission_overrides}, "permissions": sorted(permission_codes(row))} for row in rows]
+
+
+@app.post("/api/access/users")
+def create_access_user(payload: schemas.AccessUserCreate, db: Session = Depends(get_db), actor: models.User = Depends(require_permission("users.create"))):
+    if db.query(models.User).filter(func.lower(models.User.email) == payload.email.lower()).first(): raise HTTPException(400, "E-mail ja cadastrado")
+    roles = db.query(models.AccessRole).filter(models.AccessRole.id.in_(payload.role_ids), models.AccessRole.active.is_(True)).all()
+    if len(roles) != len(set(payload.role_ids)): raise HTTPException(400, "Um ou mais perfis nao existem")
+    row = models.User(name=payload.name.strip(), email=payload.email.strip().lower(), password_hash=hash_password(payload.password), role=roles[0].name.lower(), active=True)
+    row.access_roles = roles; db.add(row); db.flush(); audit(db, actor, "create", "user", row.id, f"{row.email}; Perfis={','.join(role.name for role in roles)}"); db.commit()
+    return {"id": row.id, "name": row.name, "email": row.email, "profiles": [role.name for role in roles]}
+
+
+@app.put("/api/access/users/{user_id}")
+def update_user_access(user_id: int, payload: schemas.UserAccessUpdate, db: Session = Depends(get_db), actor: models.User = Depends(require_permission("users.change_role", "users.change_permissions"))):
+    row = db.query(models.User).options(joinedload(models.User.access_roles), joinedload(models.User.permission_overrides)).filter(models.User.id == user_id).first()
+    if not row: raise HTTPException(404, "Usuario nao encontrado")
+    roles = db.query(models.AccessRole).filter(models.AccessRole.id.in_(payload.role_ids), models.AccessRole.active.is_(True)).all()
+    if len(roles) != len(set(payload.role_ids)): raise HTTPException(400, "Um ou mais perfis nao existem")
+    permission_rows = {item.code: item for item in db.query(models.Permission).filter(models.Permission.code.in_(list(payload.overrides))).all()}
+    if len(permission_rows) != len(payload.overrides): raise HTTPException(400, "Uma ou mais permissoes nao existem")
+    old = f"Perfis={','.join(role.name for role in row.access_roles)}"; row.access_roles = roles; row.permission_overrides.clear()
+    row.permission_overrides.extend(models.UserPermissionOverride(permission_id=permission_rows[code].id, allowed=allowed) for code, allowed in payload.overrides.items())
+    audit(db, actor, "update_access", "user", row.id, f"Antes={old}; Depois={','.join(role.name for role in roles)}; Excecoes={payload.overrides}"); db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/access/audit")
+def list_security_audit(db: Session = Depends(get_db), user: models.User = Depends(require_permission("reports.view_audit"))):
+    rows = db.query(models.AuditLog).options(joinedload(models.AuditLog.security_detail)).order_by(models.AuditLog.created_at.desc()).limit(500).all()
+    return [{"id": row.id, "actor_id": row.actor_id, "profiles": row.security_detail.profiles if row.security_detail else None, "ip_address": row.security_detail.ip_address if row.security_detail else None, "module": row.entity, "action": row.action, "entity_id": row.entity_id, "details": row.details, "created_at": row.created_at} for row in rows]
 
 
 @app.get("/api/products", response_model=list[schemas.ProductOut])
-def list_products(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def list_products(db: Session = Depends(get_db), user: models.User = Depends(require_permission("products.view"))):
     return db.query(models.Product).order_by(models.Product.name).all()
 
 
 @app.post("/api/products", response_model=schemas.ProductOut)
-def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("products.create"))):
     product = models.Product(**payload.model_dump())
     db.add(product)
     db.flush()
@@ -280,7 +376,7 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
 
 
 @app.put("/api/products/{product_id}", response_model=schemas.ProductOut)
-def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("products.edit"))):
     product = db.get(models.Product, product_id)
     if not product:
         raise HTTPException(404, "Produto nao encontrado")
@@ -302,7 +398,7 @@ def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session 
 
 
 @app.delete("/api/products/{product_id}")
-def delete_product(product_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def delete_product(product_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("products.deactivate"))):
     product = db.get(models.Product, product_id)
     if not product:
         raise HTTPException(404, "Produto nao encontrado")
@@ -319,7 +415,7 @@ def list_price_tables(db: Session = Depends(get_db), user: models.User = Depends
 
 
 @app.post("/api/price-tables", response_model=schemas.PriceTableOut)
-def create_price_table(payload: schemas.PriceTableCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def create_price_table(payload: schemas.PriceTableCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("settings.price_tables"))):
     if db.query(models.PriceTable).filter(func.lower(models.PriceTable.name) == payload.name.strip().lower()).first():
         raise HTTPException(400, "Ja existe uma tabela com este nome")
     if len({item.product_id for item in payload.items}) != len(payload.items):
@@ -334,7 +430,7 @@ def create_price_table(payload: schemas.PriceTableCreate, db: Session = Depends(
 
 
 @app.put("/api/price-tables/{table_id}", response_model=schemas.PriceTableOut)
-def update_price_table(table_id: int, payload: schemas.PriceTableUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def update_price_table(table_id: int, payload: schemas.PriceTableUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("settings.price_tables"))):
     row = db.query(models.PriceTable).options(joinedload(models.PriceTable.items)).filter(models.PriceTable.id == table_id).first()
     if not row: raise HTTPException(404, "Tabela nao encontrada")
     duplicate = db.query(models.PriceTable).filter(func.lower(models.PriceTable.name) == payload.name.strip().lower(), models.PriceTable.id != table_id).first()
@@ -359,8 +455,10 @@ def update_price_table(table_id: int, payload: schemas.PriceTableUpdate, db: Ses
 
 @app.get("/api/customers", response_model=list[schemas.CustomerOut])
 def list_customers(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    if not has_permission(user, "customers.view_all") and not has_permission(user, "customers.view_own"):
+        raise HTTPException(403, "Permissao insuficiente")
     query = db.query(models.Customer).options(joinedload(models.Customer.price_table), joinedload(models.Customer.ownership).joinedload(models.CustomerOwnership.seller))
-    if user.role == "vendedor":
+    if not has_permission(user, "customers.view_all"):
         query = query.join(models.CustomerOwnership).filter(models.CustomerOwnership.seller_id == user.seller_id)
     rows = query.order_by(models.Customer.legal_name).all()
     return [customer_to_schema(row) for row in rows]
@@ -368,10 +466,10 @@ def list_customers(db: Session = Depends(get_db), user: models.User = Depends(ge
 
 @app.post("/api/customers", response_model=schemas.CustomerOut)
 def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    if user.role == "gerente": raise HTTPException(403, "Somente vendedores e administradores podem cadastrar clientes")
+    if not has_permission(user, "customers.create"): raise HTTPException(403, "Permissao insuficiente")
     if db.query(models.Customer).filter(models.Customer.cnpj == payload.cnpj).first(): raise HTTPException(400, "CNPJ ja cadastrado")
     if payload.price_table_id and not db.get(models.PriceTable, payload.price_table_id): raise HTTPException(404, "Tabela de precos nao encontrada")
-    owner_seller_id = user.seller_id if user.role == "vendedor" else payload.owner_seller_id
+    owner_seller_id = payload.owner_seller_id if has_permission(user, "customers.transfer") else user.seller_id
     if not owner_seller_id or not db.get(models.Seller, owner_seller_id): raise HTTPException(400, "Selecione o vendedor responsavel")
     customer_data = payload.model_dump(exclude={"owner_seller_id"})
     row = models.Customer(**customer_data); db.add(row); db.flush()
@@ -381,7 +479,7 @@ def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_d
 
 
 @app.put("/api/customers/{customer_id}", response_model=schemas.CustomerOut)
-def update_customer(customer_id: int, payload: schemas.CustomerUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+def update_customer(customer_id: int, payload: schemas.CustomerUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("customers.edit", "customers.transfer"))):
     row = db.get(models.Customer, customer_id)
     if not row: raise HTTPException(404, "Cliente nao encontrado")
     duplicate = db.query(models.Customer).filter(models.Customer.cnpj == payload.cnpj, models.Customer.id != customer_id).first()
@@ -396,7 +494,7 @@ def update_customer(customer_id: int, payload: schemas.CustomerUpdate, db: Sessi
 
 
 @app.get("/api/stock/movements", response_model=list[schemas.MovementOut])
-def list_movements(product_id: int | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def list_movements(product_id: int | None = None, db: Session = Depends(get_db), user: models.User = Depends(require_permission("stock.view_history"))):
     query = db.query(models.StockMovement).options(joinedload(models.StockMovement.product), joinedload(models.StockMovement.responsible))
     if product_id:
         query = query.filter(models.StockMovement.product_id == product_id)
@@ -418,7 +516,10 @@ def list_movements(product_id: int | None = None, db: Session = Depends(get_db),
 
 
 @app.post("/api/stock/movements", response_model=schemas.MovementOut)
-async def create_movement(payload: schemas.MovementCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+async def create_movement(payload: schemas.MovementCreate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    movement_permissions = {"entrada": "stock.entry", "saida": "stock.exit", "ajuste": "stock.adjust", "devolucao": "stock.return"}
+    if not has_permission(user, movement_permissions.get(payload.movement_type, "stock.adjust")):
+        raise HTTPException(403, "Permissao insuficiente para esta movimentacao")
     product = db.get(models.Product, payload.product_id)
     if not product:
         raise HTTPException(404, "Produto nao encontrado")
@@ -470,7 +571,7 @@ def list_sellers(db: Session = Depends(get_db), user: models.User = Depends(get_
 
 
 @app.post("/api/sellers", response_model=schemas.SellerOut)
-def create_seller(payload: schemas.SellerCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+def create_seller(payload: schemas.SellerCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.create"))):
     if db.query(models.User).filter(models.User.email == payload.email).first():
         raise HTTPException(400, "E-mail ja cadastrado")
     seller = models.Seller(
@@ -488,6 +589,9 @@ def create_seller(payload: schemas.SellerCreate, db: Session = Depends(get_db), 
         role="vendedor",
         seller_id=seller.id,
     )
+    seller_role = db.query(models.AccessRole).filter(models.AccessRole.name == "Vendedor").first()
+    if seller_role:
+        app_user.access_roles.append(seller_role)
     db.add(app_user)
     audit(db, user, "create", "seller", seller.id, seller.name)
     db.commit()
@@ -495,7 +599,7 @@ def create_seller(payload: schemas.SellerCreate, db: Session = Depends(get_db), 
 
 
 @app.put("/api/sellers/{seller_id}", response_model=schemas.SellerOut)
-def update_seller(seller_id: int, payload: schemas.SellerUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+def update_seller(seller_id: int, payload: schemas.SellerUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.edit"))):
     seller = db.get(models.Seller, seller_id)
     if not seller:
         raise HTTPException(404, "Vendedor nao encontrado")
@@ -510,7 +614,7 @@ def update_seller(seller_id: int, payload: schemas.SellerUpdate, db: Session = D
 
 
 @app.delete("/api/sellers/{seller_id}")
-def delete_seller(seller_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+def delete_seller(seller_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("users.deactivate"))):
     seller = db.get(models.Seller, seller_id)
     if not seller:
         raise HTTPException(404, "Vendedor nao encontrado")
@@ -531,7 +635,9 @@ def list_sales(
     user: models.User = Depends(get_current_user),
 ):
     query = db.query(models.Sale).options(*sale_load_options())
-    if user.role == "vendedor":
+    if not has_permission(user, "sales.view_all") and not has_permission(user, "sales.view_own"):
+        raise HTTPException(403, "Permissao insuficiente")
+    if not has_permission(user, "sales.view_all"):
         query = query.filter(models.Sale.seller_id == user.seller_id)
     elif seller_id:
         query = query.filter(models.Sale.seller_id == seller_id)
@@ -544,7 +650,8 @@ def list_sales(
 
 @app.post("/api/sales", response_model=schemas.SaleOut)
 async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    seller_id = user.seller_id if user.role == "vendedor" else payload.seller_id
+    if not has_permission(user, "sales.create"): raise HTTPException(403, "Permissao insuficiente")
+    seller_id = user.seller_id if has_permission(user, "sales.view_own") and not has_permission(user, "sales.view_all") else payload.seller_id
     if not seller_id:
         raise HTTPException(400, "Selecione um vendedor")
     seller = db.get(models.Seller, seller_id)
@@ -588,7 +695,7 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
 
 
 @app.put("/api/sales/{sale_id}", response_model=schemas.SaleOut)
-def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("sales.edit"))):
     sale = db.query(models.Sale).options(*sale_load_options()).filter(models.Sale.id == sale_id).first()
     if not sale:
         raise HTTPException(404, "Venda nao encontrada")
@@ -668,7 +775,7 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
 
 
 @app.delete("/api/sales/{sale_id}")
-def delete_sale(sale_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def delete_sale(sale_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("sales.cancel"))):
     sale = db.query(models.Sale).options(joinedload(models.Sale.items).joinedload(models.SaleItem.product)).filter(models.Sale.id == sale_id).first()
     if not sale:
         raise HTTPException(404, "Venda nao encontrada")
@@ -691,7 +798,7 @@ def delete_sale(sale_id: int, db: Session = Depends(get_db), user: models.User =
 
 
 @app.get("/api/delivery-manifests/pending-sales", response_model=list[schemas.SaleOut])
-def list_sales_pending_delivery(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def list_sales_pending_delivery(db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.create"))):
     assigned_sale_ids = (
         db.query(models.DeliveryManifestItem.sale_id)
         .join(models.DeliveryManifest)
@@ -708,13 +815,16 @@ def list_sales_pending_delivery(db: Session = Depends(get_db), user: models.User
 
 
 @app.get("/api/delivery-manifests", response_model=list[schemas.DeliveryManifestOut])
-def list_delivery_manifests(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
-    manifests = db.query(models.DeliveryManifest).options(*delivery_manifest_options()).order_by(models.DeliveryManifest.delivery_date.desc(), models.DeliveryManifest.id.desc()).limit(100).all()
+def list_delivery_manifests(db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.view"))):
+    query = db.query(models.DeliveryManifest).options(*delivery_manifest_options())
+    if not has_permission(user, "manifests.create") and has_permission(user, "manifests.confirm_delivery"):
+        query = query.filter(func.lower(models.DeliveryManifest.driver_name) == user.name.lower())
+    manifests = query.order_by(models.DeliveryManifest.delivery_date.desc(), models.DeliveryManifest.id.desc()).limit(100).all()
     return [delivery_manifest_to_schema(manifest) for manifest in manifests]
 
 
 @app.post("/api/delivery-manifests", response_model=schemas.DeliveryManifestOut)
-def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.create"))):
     sale_ids = [item.sale_id for item in payload.items]
     if len(sale_ids) != len(set(sale_ids)):
         raise HTTPException(400, "Uma venda nao pode aparecer duas vezes no mesmo romaneio")
@@ -755,11 +865,15 @@ def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Sessio
 
 
 @app.put("/api/delivery-manifests/{manifest_id}/status", response_model=schemas.DeliveryManifestOut)
-def update_delivery_manifest_status(manifest_id: int, payload: schemas.DeliveryManifestStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def update_delivery_manifest_status(manifest_id: int, payload: schemas.DeliveryManifestStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    needed = {"em_rota": "manifests.start_route", "concluido": "manifests.finish_route", "cancelado": "manifests.cancel"}.get(payload.status, "manifests.edit")
+    if not has_permission(user, needed): raise HTTPException(403, "Permissao insuficiente")
     allowed = {"preparacao", "em_rota", "concluido", "cancelado"}
     if payload.status not in allowed:
         raise HTTPException(400, "Status de romaneio invalido")
     manifest = get_delivery_manifest(db, manifest_id)
+    if not has_permission(user, "manifests.create") and manifest.driver_name.lower() != user.name.lower():
+        raise HTTPException(403, "Romaneio atribuido a outro motorista")
     if payload.status == "concluido" and any(item.status != "entregue" for item in manifest.items):
         raise HTTPException(400, "Confirme todas as entregas antes de concluir o romaneio")
     manifest.status = payload.status
@@ -773,11 +887,13 @@ def update_delivery_manifest_status(manifest_id: int, payload: schemas.DeliveryM
 
 
 @app.put("/api/delivery-manifests/{manifest_id}/items/{item_id}", response_model=schemas.DeliveryManifestOut)
-def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.DeliveryItemStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.DeliveryItemStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.confirm_delivery"))):
     allowed = {"pendente", "entregue", "nao_entregue"}
     if payload.status not in allowed:
         raise HTTPException(400, "Status de entrega invalido")
     manifest = get_delivery_manifest(db, manifest_id)
+    if not has_permission(user, "manifests.create") and manifest.driver_name.lower() != user.name.lower():
+        raise HTTPException(403, "Romaneio atribuido a outro motorista")
     if manifest.status == "cancelado":
         raise HTTPException(400, "Romaneio cancelado")
     item = next((row for row in manifest.items if row.id == item_id), None)
@@ -796,7 +912,7 @@ def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.Delive
 
 
 @app.get("/api/delivery-manifests/{manifest_id}/pdf")
-def delivery_manifest_pdf(manifest_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def delivery_manifest_pdf(manifest_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.print"))):
     manifest = get_delivery_manifest(db, manifest_id)
     stream = BytesIO()
     doc = SimpleDocTemplate(
@@ -905,7 +1021,7 @@ def delivery_manifest_pdf(manifest_id: int, db: Session = Depends(get_db), user:
 
 
 @app.get("/api/finance/dashboard")
-def finance_dashboard(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def finance_dashboard(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_receivables", "finance.view_payables", match_all=False))):
     today = date.today()
     receivables = db.query(models.Receivable).filter(models.Receivable.status != "cancelado").all()
     payables = db.query(models.Payable).filter(models.Payable.status != "cancelado").all()
@@ -922,47 +1038,47 @@ def finance_dashboard(db: Session = Depends(get_db), user: models.User = Depends
 
 
 @app.get("/api/finance/accounts")
-def list_financial_accounts(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def list_financial_accounts(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_cash_flow"))):
     accounts = db.query(models.FinancialAccount).order_by(models.FinancialAccount.name).all()
     return [{"id": row.id, "name": row.name, "account_type": row.account_type, "initial_balance": row.initial_balance, "active": row.active, "balance": financial_account_balance(db, row)} for row in accounts]
 
 
 @app.post("/api/finance/accounts")
-def create_financial_account(payload: schemas.FinancialAccountCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+def create_financial_account(payload: schemas.FinancialAccountCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.manage_accounts"))):
     if db.query(models.FinancialAccount).filter(func.lower(models.FinancialAccount.name) == payload.name.lower()).first(): raise HTTPException(400, "Conta financeira ja cadastrada")
     row = models.FinancialAccount(**payload.model_dump()); db.add(row); db.flush(); audit(db, user, "create", "financial_account", row.id, row.name); db.commit()
     return {"id": row.id, **payload.model_dump(), "active": True, "balance": row.initial_balance}
 
 
 @app.get("/api/finance/cost-centers", response_model=list[schemas.CostCenterOut])
-def list_cost_centers(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def list_cost_centers(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_payables"))):
     return db.query(models.CostCenter).filter(models.CostCenter.active.is_(True)).order_by(models.CostCenter.name).all()
 
 
 @app.post("/api/finance/cost-centers", response_model=schemas.CostCenterOut)
-def create_cost_center(payload: schemas.NamedEntityCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+def create_cost_center(payload: schemas.NamedEntityCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("settings.financial"))):
     row = models.CostCenter(name=payload.name.strip()); db.add(row); db.flush(); audit(db, user, "create", "cost_center", row.id, row.name); db.commit(); db.refresh(row); return row
 
 
 @app.get("/api/finance/suppliers", response_model=list[schemas.SupplierOut])
-def list_suppliers(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def list_suppliers(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_payables"))):
     return db.query(models.Supplier).filter(models.Supplier.active.is_(True)).order_by(models.Supplier.name).all()
 
 
 @app.post("/api/finance/suppliers", response_model=schemas.SupplierOut)
-def create_supplier(payload: schemas.SupplierCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def create_supplier(payload: schemas.SupplierCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.create_payables"))):
     row = models.Supplier(**payload.model_dump()); db.add(row); db.flush(); audit(db, user, "create", "supplier", row.id, row.name); db.commit(); db.refresh(row); return row
 
 
 @app.get("/api/finance/receivables")
-def list_receivables(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def list_receivables(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_receivables"))):
     rows = db.query(models.Receivable).options(joinedload(models.Receivable.customer), joinedload(models.Receivable.seller)).order_by(models.Receivable.due_date).all()
     today = date.today()
     return [{"id": row.id, "sale_id": row.sale_id, "customer_name": row.customer.legal_name, "seller_name": row.seller.name, "due_date": row.due_date, "original_amount": row.original_amount, "paid_amount": row.paid_amount, "balance": max(0, row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount - row.paid_amount), "status": "vencido" if row.status in {"aberto", "parcial"} and row.due_date < today else row.status} for row in rows]
 
 
 @app.post("/api/finance/receivables/{receivable_id}/payments")
-def receive_payment(receivable_id: int, payload: schemas.FinancialPaymentCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def receive_payment(receivable_id: int, payload: schemas.FinancialPaymentCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.settle_titles"))):
     row = db.get(models.Receivable, receivable_id); account = db.get(models.FinancialAccount, payload.account_id)
     if not row or row.status == "cancelado": raise HTTPException(404, "Titulo a receber nao encontrado")
     if not account or not account.active: raise HTTPException(404, "Conta financeira nao encontrada")
@@ -975,20 +1091,20 @@ def receive_payment(receivable_id: int, payload: schemas.FinancialPaymentCreate,
 
 
 @app.get("/api/finance/payables")
-def list_payables(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def list_payables(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_payables"))):
     rows = db.query(models.Payable).options(joinedload(models.Payable.supplier), joinedload(models.Payable.cost_center)).order_by(models.Payable.due_date).all(); today = date.today()
     return [{"id": row.id, "description": row.description, "supplier_name": row.supplier.name if row.supplier else None, "cost_center_name": row.cost_center.name, "category": row.category, "due_date": row.due_date, "original_amount": row.original_amount, "paid_amount": row.paid_amount, "balance": max(0, row.original_amount - row.paid_amount), "status": "vencido" if row.status in {"aberto", "parcial"} and row.due_date < today else row.status} for row in rows]
 
 
 @app.post("/api/finance/payables")
-def create_payable(payload: schemas.PayableCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def create_payable(payload: schemas.PayableCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.create_payables"))):
     if not db.get(models.CostCenter, payload.cost_center_id): raise HTTPException(404, "Centro de custo nao encontrado")
     if payload.supplier_id and not db.get(models.Supplier, payload.supplier_id): raise HTTPException(404, "Fornecedor nao encontrado")
     row = models.Payable(**payload.model_dump()); db.add(row); db.flush(); audit(db, user, "create", "payable", row.id, f"{row.description} R$ {row.original_amount:.2f}"); db.commit(); return {"id": row.id, "status": row.status}
 
 
 @app.post("/api/finance/payables/{payable_id}/payments")
-def pay_payable(payable_id: int, payload: schemas.FinancialPaymentCreate, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def pay_payable(payable_id: int, payload: schemas.FinancialPaymentCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.settle_titles"))):
     row = db.get(models.Payable, payable_id); account = db.get(models.FinancialAccount, payload.account_id)
     if not row or row.status == "cancelado": raise HTTPException(404, "Conta a pagar nao encontrada")
     if not account or not account.active: raise HTTPException(404, "Conta financeira nao encontrada")
@@ -1000,7 +1116,7 @@ def pay_payable(payable_id: int, payload: schemas.FinancialPaymentCreate, db: Se
 
 
 @app.get("/api/finance/cash-flow")
-def cash_flow(start: date | None = None, end: date | None = None, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def cash_flow(start: date | None = None, end: date | None = None, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_cash_flow"))):
     query = db.query(models.CashTransaction).options(joinedload(models.CashTransaction.account)).filter(models.CashTransaction.reversed.is_(False))
     if start: query = query.filter(models.CashTransaction.occurred_at >= datetime.combine(start, time.min))
     if end: query = query.filter(models.CashTransaction.occurred_at <= datetime.combine(end, time.max))
@@ -1014,13 +1130,13 @@ def dashboard(
     end: date | None = Query(None),
     seller_id: int | None = None,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(require_permission("dashboard.view")),
 ):
     today = date.today()
     start_dt = datetime.combine(start or today, time.min)
     end_dt = datetime.combine(end or today, time.max)
     query = db.query(models.Sale).filter(models.Sale.status == "confirmada", models.Sale.occurred_at >= start_dt, models.Sale.occurred_at <= end_dt)
-    if user.role == "vendedor":
+    if has_permission(user, "dashboard.view_own") and not has_permission(user, "dashboard.view_general"):
         query = query.filter(models.Sale.seller_id == user.seller_id)
     elif seller_id:
         query = query.filter(models.Sale.seller_id == seller_id)
@@ -1049,12 +1165,12 @@ def dashboard(
 
 
 @app.get("/api/whatsapp/settings", response_model=schemas.WhatsAppSettingsOut)
-def read_whatsapp(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+def read_whatsapp(db: Session = Depends(get_db), user: models.User = Depends(require_permission("settings.alerts"))):
     return get_whatsapp_settings(db)
 
 
 @app.put("/api/whatsapp/settings", response_model=schemas.WhatsAppSettingsOut)
-def update_whatsapp(payload: schemas.WhatsAppSettingsIn, db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+def update_whatsapp(payload: schemas.WhatsAppSettingsIn, db: Session = Depends(get_db), user: models.User = Depends(require_permission("settings.alerts"))):
     settings_row = get_whatsapp_settings(db)
     for key, value in payload.model_dump().items():
         setattr(settings_row, key, value)
@@ -1065,13 +1181,13 @@ def update_whatsapp(payload: schemas.WhatsAppSettingsIn, db: Session = Depends(g
 
 
 @app.post("/api/whatsapp/test")
-async def test_whatsapp(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin"))):
+async def test_whatsapp(db: Session = Depends(get_db), user: models.User = Depends(require_permission("settings.integrations"))):
     settings_row = get_whatsapp_settings(db)
     return await send_whatsapp(db, settings_row.manager_phone, "Teste de integracao WhatsApp do Sistema Carvao.")
 
 
 @app.get("/api/reports/export.xlsx")
-def export_xlsx(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def export_xlsx(db: Session = Depends(get_db), user: models.User = Depends(require_permission("reports.export_excel"))):
     sales = db.query(models.Sale).options(joinedload(models.Sale.seller)).order_by(models.Sale.occurred_at.desc()).all()
     sellers = db.query(models.Seller).order_by(models.Seller.name).all()
     wb = Workbook()
@@ -1148,7 +1264,7 @@ def export_xlsx(db: Session = Depends(get_db), user: models.User = Depends(requi
 
 
 @app.get("/api/reports/export.pdf")
-def export_pdf(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
+def export_pdf(db: Session = Depends(get_db), user: models.User = Depends(require_permission("reports.export_pdf"))):
     sales = db.query(models.Sale).options(joinedload(models.Sale.seller)).order_by(models.Sale.occurred_at.desc()).all()
     stream = BytesIO()
     doc = SimpleDocTemplate(stream, pagesize=landscape(A4), rightMargin=12 * mm, leftMargin=12 * mm, topMargin=12 * mm, bottomMargin=14 * mm)

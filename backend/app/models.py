@@ -111,6 +111,50 @@ class User(Base, TimestampMixin):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     seller_id: Mapped[int | None] = mapped_column(ForeignKey("sellers.id"), nullable=True)
     seller = relationship("Seller", back_populates="user")
+    access_roles = relationship("AccessRole", secondary="user_access_roles", back_populates="users")
+    permission_overrides = relationship("UserPermissionOverride", cascade="all, delete-orphan", back_populates="user")
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    module: Mapped[str] = mapped_column(String(50), index=True)
+    name: Mapped[str] = mapped_column(String(140))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    roles = relationship("AccessRole", secondary="access_role_permissions", back_populates="permissions")
+
+
+class AccessRole(Base, TimestampMixin):
+    __tablename__ = "access_roles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    system: Mapped[bool] = mapped_column(Boolean, default=False)
+    permissions = relationship("Permission", secondary="access_role_permissions", back_populates="roles")
+    users = relationship("User", secondary="user_access_roles", back_populates="access_roles")
+
+
+class AccessRolePermission(Base):
+    __tablename__ = "access_role_permissions"
+    role_id: Mapped[int] = mapped_column(ForeignKey("access_roles.id"), primary_key=True)
+    permission_id: Mapped[int] = mapped_column(ForeignKey("permissions.id"), primary_key=True)
+
+
+class UserAccessRole(Base):
+    __tablename__ = "user_access_roles"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    role_id: Mapped[int] = mapped_column(ForeignKey("access_roles.id"), primary_key=True)
+
+
+class UserPermissionOverride(Base):
+    __tablename__ = "user_permission_overrides"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    permission_id: Mapped[int] = mapped_column(ForeignKey("permissions.id"), primary_key=True)
+    allowed: Mapped[bool] = mapped_column(Boolean)
+    user = relationship("User", back_populates="permission_overrides")
+    permission = relationship("Permission")
 
 
 class Sale(Base, TimestampMixin):
@@ -323,3 +367,14 @@ class AuditLog(Base):
     entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    security_detail = relationship("SecurityAuditDetail", cascade="all, delete-orphan", uselist=False)
+
+
+class SecurityAuditDetail(Base):
+    __tablename__ = "security_audit_details"
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_logs.id"), primary_key=True)
+    profiles: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    module: Mapped[str] = mapped_column(String(80))
+    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_value: Mapped[str | None] = mapped_column(Text, nullable=True)

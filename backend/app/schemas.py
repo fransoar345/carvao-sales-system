@@ -16,6 +16,8 @@ class UserOut(BaseModel):
     role: str
     seller_id: int | None = None
     active: bool
+    profiles: list[str] = []
+    permissions: list[str] = []
 
     class Config:
         from_attributes = True
@@ -353,6 +355,35 @@ class FinancialPaymentCreate(BaseModel):
     payment_method: str = "pix"
     occurred_at: datetime | None = None
     note: str | None = None
+
+
+class AccessRoleCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    description: str | None = None
+    permission_codes: list[str] = []
+
+
+class PermissionCreate(BaseModel):
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
+    module: str = Field(min_length=2, max_length=50)
+    name: str = Field(min_length=2, max_length=140)
+    description: str | None = None
+
+
+class AccessRoleUpdate(AccessRoleCreate):
+    active: bool = True
+
+
+class UserAccessUpdate(BaseModel):
+    role_ids: list[int] = []
+    overrides: dict[str, bool] = {}
+
+
+class AccessUserCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    email: str
+    password: str = Field(min_length=6)
+    role_ids: list[int] = Field(min_length=1)
 
 
 class PayableCreate(BaseModel):
