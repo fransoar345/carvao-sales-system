@@ -927,31 +927,51 @@ async def test_whatsapp(db: Session = Depends(get_db), user: models.User = Depen
 @app.get("/api/reports/export.xlsx")
 def export_xlsx(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
     sales = db.query(models.Sale).options(joinedload(models.Sale.seller)).order_by(models.Sale.occurred_at.desc()).all()
+    sellers = db.query(models.Seller).order_by(models.Seller.name).all()
     wb = Workbook()
     ws = wb.active
     ws.title = "Vendas"
-    ws.append(["ID", "Data", "Vendedor", "Pagamento", "Status", "Total", "Comissao (%)", "Comissao (R$)"])
-    for sale in sales:
-        percent = sale.seller.commission_percent or 0
-        commission = sale.total_value * (percent / 100) if sale.status == "confirmada" else 0
-        ws.append([sale.id, sale.occurred_at.strftime("%d/%m/%Y %H:%M"), sale.seller.name, sale.payment_method, sale.status, sale.total_value, percent, commission])
-    for cell in ws[1]:
-        cell.font = cell.font.copy(bold=True)
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-    for row in range(2, ws.max_row + 1):
-        ws.cell(row, 6).number_format = 'R$ #,##0.00'
-        ws.cell(row, 7).number_format = '0.00"%"'
-        ws.cell(row, 8).number_format = 'R$ #,##0.00'
+    headers = ["ID", "Data", "Vendedor", "Pagamento", "Status", "Total", "Comissao (%)", "Comissao (R$)"]
     widths = {"A": 10, "B": 20, "C": 24, "D": 16, "E": 14, "F": 16, "G": 15, "H": 18}
-    for column, width in widths.items():
-        ws.column_dimensions[column].width = width
+
+    def fill_sales_sheet(sheet, rows, include_totals=False):
+        sheet.append(headers)
+        for sale in rows:
+            percent = sale.seller.commission_percent or 0
+            commission = sale.total_value * (percent / 100) if sale.status == "confirmada" else 0
+            sheet.append([sale.id, sale.occurred_at.strftime("%d/%m/%Y %H:%M"), sale.seller.name, sale.payment_method, sale.status, sale.total_value, percent, commission])
+        for cell in sheet[1]:
+            cell.font = cell.font.copy(bold=True)
+        sheet.freeze_panes = "A2"
+        data_end = max(sheet.max_row, 1)
+        sheet.auto_filter.ref = f"A1:H{data_end}"
+        for row_number in range(2, data_end + 1):
+            sheet.cell(row_number, 6).number_format = 'R$ #,##0.00'
+            sheet.cell(row_number, 7).number_format = '0.00"%"'
+            sheet.cell(row_number, 8).number_format = 'R$ #,##0.00'
+        if include_totals:
+            confirmed = [sale for sale in rows if sale.status == "confirmada"]
+            total_sold = sum(sale.total_value for sale in confirmed)
+            total_commission = sum(sale.total_value * ((sale.seller.commission_percent or 0) / 100) for sale in confirmed)
+            sheet.append([])
+            sheet.append(["TOTAIS", "", "", "", f"{len(confirmed)} vendas confirmadas", total_sold, "", total_commission])
+            total_row = sheet.max_row
+            sheet.cell(total_row, 1).font = sheet.cell(total_row, 1).font.copy(bold=True)
+            sheet.cell(total_row, 5).font = sheet.cell(total_row, 5).font.copy(bold=True)
+            sheet.cell(total_row, 6).font = sheet.cell(total_row, 6).font.copy(bold=True)
+            sheet.cell(total_row, 8).font = sheet.cell(total_row, 8).font.copy(bold=True)
+            sheet.cell(total_row, 6).number_format = 'R$ #,##0.00'
+            sheet.cell(total_row, 8).number_format = 'R$ #,##0.00'
+        for column, width in widths.items():
+            sheet.column_dimensions[column].width = width
+
+    fill_sales_sheet(ws, sales)
 
     summary = wb.create_sheet("Comissoes por vendedor")
     summary.append(["Vendedor", "Vendas confirmadas", "Total vendido", "Comissao (%)", "Comissao total"])
     for cell in summary[1]:
         cell.font = cell.font.copy(bold=True)
-    for seller in db.query(models.Seller).order_by(models.Seller.name).all():
+    for seller in sellers:
         seller_sales = [sale for sale in sales if sale.seller_id == seller.id and sale.status == "confirmada"]
         sold = sum(sale.total_value for sale in seller_sales)
         percent = seller.commission_percent or 0
@@ -962,6 +982,20 @@ def export_xlsx(db: Session = Depends(get_db), user: models.User = Depends(requi
         summary.cell(row, 5).number_format = 'R$ #,##0.00'
     for column, width in {"A": 26, "B": 21, "C": 18, "D": 15, "E": 18}.items():
         summary.column_dimensions[column].width = width
+
+    used_titles = set(wb.sheetnames)
+    for seller in sellers:
+        base_title = "".join("-" if character in '[]:*?/\\' else character for character in seller.name).strip() or f"Vendedor {seller.id}"
+        base_title = base_title[:31]
+        title = base_title
+        suffix = 2
+        while title in used_titles:
+            marker = f" ({suffix})"
+            title = f"{base_title[:31 - len(marker)]}{marker}"
+            suffix += 1
+        used_titles.add(title)
+        seller_sheet = wb.create_sheet(title)
+        fill_sales_sheet(seller_sheet, [sale for sale in sales if sale.seller_id == seller.id], include_totals=True)
     stream = BytesIO()
     wb.save(stream)
     return Response(stream.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=relatorio-vendas.xlsx"})
