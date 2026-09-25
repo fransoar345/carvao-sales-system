@@ -9,6 +9,12 @@ const money = (v) =>
     style: "currency",
     currency: "BRL",
   });
+const apiErrorMessage = (payload) => {
+  const detail = payload?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((item) => item?.msg || "Campo invalido").join("; ");
+  return "Erro na requisicao";
+};
 const legacyPermissions = {
   gerente: ["dashboard.view", "dashboard.view_general", "sales.create", "sales.edit", "sales.cancel", "sales.change_seller", "sales.view_all", "customers.view_all", "products.view", "products.create", "products.edit", "stock.view", "stock.entry", "stock.exit", "stock.adjust", "stock.view_history", "manifests.view", "manifests.create", "manifests.edit", "manifests.cancel", "manifests.start_route", "manifests.finish_route", "manifests.confirm_delivery", "manifests.print", "finance.view_receivables", "finance.view_payables", "finance.view_cash_flow", "finance.create_payables", "finance.settle_titles", "reports.export_pdf", "reports.export_excel", "settings.price_tables"],
   vendedor: ["dashboard.view", "dashboard.view_own", "sales.create", "sales.view_own", "customers.create", "customers.view_own", "products.view", "reports.view_commission"],
@@ -35,7 +41,7 @@ function App() {
             ...(options.headers || {}),
           },
         });
-        if (!res.ok) throw new Error((await res.json()).detail || "Erro na requisicao");
+        if (!res.ok) throw new Error(apiErrorMessage(await res.json()));
         return res.json();
       },
     }),
@@ -734,7 +740,7 @@ function Sales({ api, user }) {
       customer_id: Number(form.customer_id),
       payment_method: form.payment_method,
       payment_condition_id: form.payment_method === "prazo" && form.payment_condition_id ? Number(form.payment_condition_id) : null,
-      payment_due_date: form.payment_method === "prazo" ? form.payment_due_date : null,
+      payment_due_date: form.payment_method === "prazo" && form.payment_due_date ? form.payment_due_date : null,
       delivery_address: form.delivery_address,
       items: [
         {
