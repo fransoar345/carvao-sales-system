@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from openpyxl import Workbook
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
@@ -930,9 +930,38 @@ def export_xlsx(db: Session = Depends(get_db), user: models.User = Depends(requi
     wb = Workbook()
     ws = wb.active
     ws.title = "Vendas"
-    ws.append(["ID", "Data", "Vendedor", "Pagamento", "Status", "Total"])
+    ws.append(["ID", "Data", "Vendedor", "Pagamento", "Status", "Total", "Comissao (%)", "Comissao (R$)"])
     for sale in sales:
-        ws.append([sale.id, sale.occurred_at.strftime("%Y-%m-%d %H:%M"), sale.seller.name, sale.payment_method, sale.status, sale.total_value])
+        percent = sale.seller.commission_percent or 0
+        commission = sale.total_value * (percent / 100) if sale.status == "confirmada" else 0
+        ws.append([sale.id, sale.occurred_at.strftime("%d/%m/%Y %H:%M"), sale.seller.name, sale.payment_method, sale.status, sale.total_value, percent, commission])
+    for cell in ws[1]:
+        cell.font = cell.font.copy(bold=True)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for row in range(2, ws.max_row + 1):
+        ws.cell(row, 6).number_format = 'R$ #,##0.00'
+        ws.cell(row, 7).number_format = '0.00"%"'
+        ws.cell(row, 8).number_format = 'R$ #,##0.00'
+    widths = {"A": 10, "B": 20, "C": 24, "D": 16, "E": 14, "F": 16, "G": 15, "H": 18}
+    for column, width in widths.items():
+        ws.column_dimensions[column].width = width
+
+    summary = wb.create_sheet("Comissoes por vendedor")
+    summary.append(["Vendedor", "Vendas confirmadas", "Total vendido", "Comissao (%)", "Comissao total"])
+    for cell in summary[1]:
+        cell.font = cell.font.copy(bold=True)
+    for seller in db.query(models.Seller).order_by(models.Seller.name).all():
+        seller_sales = [sale for sale in sales if sale.seller_id == seller.id and sale.status == "confirmada"]
+        sold = sum(sale.total_value for sale in seller_sales)
+        percent = seller.commission_percent or 0
+        summary.append([seller.name, len(seller_sales), sold, percent, sold * (percent / 100)])
+    for row in range(2, summary.max_row + 1):
+        summary.cell(row, 3).number_format = 'R$ #,##0.00'
+        summary.cell(row, 4).number_format = '0.00"%"'
+        summary.cell(row, 5).number_format = 'R$ #,##0.00'
+    for column, width in {"A": 26, "B": 21, "C": 18, "D": 15, "E": 18}.items():
+        summary.column_dimensions[column].width = width
     stream = BytesIO()
     wb.save(stream)
     return Response(stream.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=relatorio-vendas.xlsx"})
@@ -940,23 +969,46 @@ def export_xlsx(db: Session = Depends(get_db), user: models.User = Depends(requi
 
 @app.get("/api/reports/export.pdf")
 def export_pdf(db: Session = Depends(get_db), user: models.User = Depends(require_roles("admin", "gerente"))):
-    sales = db.query(models.Sale).options(joinedload(models.Sale.seller)).order_by(models.Sale.occurred_at.desc()).limit(40).all()
+    sales = db.query(models.Sale).options(joinedload(models.Sale.seller)).order_by(models.Sale.occurred_at.desc()).all()
     stream = BytesIO()
-    pdf = canvas.Canvas(stream, pagesize=A4)
-    width, height = A4
-    y = height - 50
-    pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(40, y, "Relatorio de Vendas - Sistema Carvao")
-    y -= 30
-    pdf.setFont("Helvetica", 10)
+    doc = SimpleDocTemplate(stream, pagesize=landscape(A4), rightMargin=12 * mm, leftMargin=12 * mm, topMargin=12 * mm, bottomMargin=14 * mm)
+    styles = getSampleStyleSheet()
+    story = [Paragraph("Relatorio de Vendas - Sistema Carvao", styles["Title"]), Spacer(1, 5 * mm)]
+    rows = [["ID", "Data", "Vendedor", "Pagamento", "Status", "Total", "%", "Comissao"]]
     for sale in sales:
-        pdf.drawString(40, y, f"#{sale.id} | {sale.occurred_at:%d/%m/%Y %H:%M} | {sale.seller.name} | {sale.payment_method} | R$ {sale.total_value:.2f}")
-        y -= 18
-        if y < 50:
-            pdf.showPage()
-            y = height - 50
-            pdf.setFont("Helvetica", 10)
-    pdf.save()
+        percent = sale.seller.commission_percent or 0
+        commission = sale.total_value * (percent / 100) if sale.status == "confirmada" else 0
+        rows.append([str(sale.id), sale.occurred_at.strftime("%d/%m/%Y %H:%M"), sale.seller.name, sale.payment_method, sale.status, f"R$ {sale.total_value:.2f}", f"{percent:.2f}%", f"R$ {commission:.2f}"])
+    sales_table = Table(rows, repeatRows=1, colWidths=[14 * mm, 34 * mm, 43 * mm, 27 * mm, 24 * mm, 28 * mm, 18 * mm, 30 * mm])
+    sales_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#18231c")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cfd8cd")), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f1")]),
+        ("ALIGN", (5, 1), (-1, -1), "RIGHT"),
+    ]))
+    story.extend([sales_table, Spacer(1, 7 * mm), Paragraph("Resumo de comissoes por vendedor", styles["Heading2"])])
+    summary_rows = [["Vendedor", "Vendas confirmadas", "Total vendido", "%", "Comissao total"]]
+    for seller in db.query(models.Seller).order_by(models.Seller.name).all():
+        seller_sales = [sale for sale in sales if sale.seller_id == seller.id and sale.status == "confirmada"]
+        sold = sum(sale.total_value for sale in seller_sales)
+        percent = seller.commission_percent or 0
+        summary_rows.append([seller.name, str(len(seller_sales)), f"R$ {sold:.2f}", f"{percent:.2f}%", f"R$ {sold * (percent / 100):.2f}"])
+    summary_table = Table(summary_rows, repeatRows=1, colWidths=[55 * mm, 38 * mm, 38 * mm, 22 * mm, 40 * mm])
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ffbf47")), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9), ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cfd8cd")),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+    ]))
+    story.append(summary_table)
+
+    def report_footer(pdf_canvas, pdf_doc):
+        pdf_canvas.saveState(); pdf_canvas.setFont("Helvetica", 8)
+        pdf_canvas.drawString(12 * mm, 7 * mm, f"Emitido em {datetime.now():%d/%m/%Y %H:%M}")
+        pdf_canvas.drawRightString(landscape(A4)[0] - 12 * mm, 7 * mm, f"Pagina {pdf_doc.page}")
+        pdf_canvas.restoreState()
+
+    doc.build(story, onFirstPage=report_footer, onLaterPages=report_footer)
     return Response(stream.getvalue(), media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=relatorio-vendas.pdf"})
 
 
