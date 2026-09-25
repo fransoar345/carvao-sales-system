@@ -193,13 +193,15 @@ class SaleCreate(BaseModel):
     customer_phone: str | None = None
     payment_method: str
     payment_due_date: date | None = None
+    payment_condition_id: int | None = None
+    credit_override_reason: str | None = None
     delivery_address: str = Field(min_length=3, max_length=300)
     total_value: float | None = None
     items: list[SaleItemCreate]
 
     @model_validator(mode="after")
     def require_due_date_for_credit(self):
-        if self.payment_method == "prazo" and not self.payment_due_date:
+        if self.payment_method == "prazo" and not self.payment_due_date and not self.payment_condition_id:
             raise ValueError("Informe a data de vencimento para venda a prazo")
         return self
 
@@ -211,13 +213,15 @@ class SaleUpdate(BaseModel):
     customer_phone: str | None = None
     payment_method: str
     payment_due_date: date | None = None
+    payment_condition_id: int | None = None
+    credit_override_reason: str | None = None
     delivery_address: str = Field(min_length=3, max_length=300)
     total_value: float | None = None
     items: list[SaleItemCreate] = Field(min_length=1)
 
     @model_validator(mode="after")
     def require_due_date_for_credit(self):
-        if self.payment_method == "prazo" and not self.payment_due_date:
+        if self.payment_method == "prazo" and not self.payment_due_date and not self.payment_condition_id:
             raise ValueError("Informe a data de vencimento para venda a prazo")
         return self
 
@@ -395,3 +399,35 @@ class PayableCreate(BaseModel):
     due_date: date
     original_amount: float = Field(gt=0)
     notes: str | None = None
+
+
+class PaymentConditionCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    installment_days: list[int] = Field(min_length=1)
+    interest_percent_month: float = Field(default=0, ge=0)
+    fine_percent: float = Field(default=0, ge=0)
+    active: bool = True
+
+
+class CustomerCreditUpdate(BaseModel):
+    credit_limit: float = Field(default=0, ge=0)
+    max_term_days: int = Field(default=30, ge=0)
+    block_overdue: bool = True
+    tolerance_days: int = Field(default=0, ge=0)
+
+
+class ReceivableAdjustment(BaseModel):
+    interest_amount: float = Field(default=0, ge=0)
+    fine_amount: float = Field(default=0, ge=0)
+    discount_amount: float = Field(default=0, ge=0)
+    reason: str = Field(min_length=3)
+
+
+class CollectionEventCreate(BaseModel):
+    contact_type: str
+    notes: str = Field(min_length=2)
+    next_contact_date: date | None = None
+
+
+class ReversalCreate(BaseModel):
+    reason: str = Field(min_length=3)

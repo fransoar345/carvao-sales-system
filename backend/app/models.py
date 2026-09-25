@@ -58,6 +58,7 @@ class Customer(Base, TimestampMixin):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     price_table = relationship("PriceTable")
     ownership = relationship("CustomerOwnership", cascade="all, delete-orphan", back_populates="customer", uselist=False)
+    credit_profile = relationship("CustomerCreditProfile", cascade="all, delete-orphan", back_populates="customer", uselist=False)
 
 
 class CustomerOwnership(Base):
@@ -66,6 +67,16 @@ class CustomerOwnership(Base):
     seller_id: Mapped[int] = mapped_column(ForeignKey("sellers.id"), index=True)
     customer = relationship("Customer", back_populates="ownership")
     seller = relationship("Seller")
+
+
+class CustomerCreditProfile(Base, TimestampMixin):
+    __tablename__ = "customer_credit_profiles"
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), primary_key=True)
+    credit_limit: Mapped[float] = mapped_column(Float, default=0)
+    max_term_days: Mapped[int] = mapped_column(Integer, default=30)
+    block_overdue: Mapped[bool] = mapped_column(Boolean, default=True)
+    tolerance_days: Mapped[int] = mapped_column(Integer, default=0)
+    customer = relationship("Customer", back_populates="credit_profile")
 
 
 class StockMovement(Base, TimestampMixin):
@@ -236,6 +247,16 @@ class FinancialAccount(Base, TimestampMixin):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class PaymentCondition(Base, TimestampMixin):
+    __tablename__ = "payment_conditions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    installment_days: Mapped[str] = mapped_column(String(300), default="0")
+    interest_percent_month: Mapped[float] = mapped_column(Float, default=0)
+    fine_percent: Mapped[float] = mapped_column(Float, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class Receivable(Base, TimestampMixin):
     __tablename__ = "receivables"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -253,6 +274,39 @@ class Receivable(Base, TimestampMixin):
     customer = relationship("Customer")
     seller = relationship("Seller")
     payments = relationship("ReceivablePayment", cascade="all, delete-orphan", back_populates="receivable")
+    installments = relationship("ReceivableInstallment", cascade="all, delete-orphan", back_populates="receivable", order_by="ReceivableInstallment.installment_number")
+    collection_events = relationship("CollectionEvent", cascade="all, delete-orphan", back_populates="receivable")
+
+
+class SaleFinancialPlan(Base):
+    __tablename__ = "sale_financial_plans"
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), primary_key=True)
+    payment_condition_id: Mapped[int] = mapped_column(ForeignKey("payment_conditions.id"))
+    condition = relationship("PaymentCondition")
+
+
+class ReceivableInstallment(Base, TimestampMixin):
+    __tablename__ = "receivable_installments"
+    __table_args__ = (UniqueConstraint("receivable_id", "installment_number", name="uq_receivable_installment"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    receivable_id: Mapped[int] = mapped_column(ForeignKey("receivables.id"), index=True)
+    installment_number: Mapped[int] = mapped_column(Integer)
+    due_date: Mapped[date] = mapped_column(Date, index=True)
+    original_amount: Mapped[float] = mapped_column(Float)
+    paid_amount: Mapped[float] = mapped_column(Float, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="aberto")
+    receivable = relationship("Receivable", back_populates="installments")
+
+
+class CollectionEvent(Base, TimestampMixin):
+    __tablename__ = "collection_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    receivable_id: Mapped[int] = mapped_column(ForeignKey("receivables.id"), index=True)
+    contact_type: Mapped[str] = mapped_column(String(40))
+    notes: Mapped[str] = mapped_column(Text)
+    next_contact_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    responsible_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    receivable = relationship("Receivable", back_populates="collection_events")
 
 
 class ReceivablePayment(Base, TimestampMixin):

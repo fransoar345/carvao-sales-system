@@ -51,11 +51,18 @@ def seed_data(db):
             db.add(models.CostCenter(name=name))
     if not db.query(models.FinancialAccount).first():
         db.add(models.FinancialAccount(name="Caixa principal", account_type="caixa", initial_balance=0))
+    for name, days in [("A vista", "0"), ("7 dias", "7"), ("15 dias", "15"), ("30 dias", "30"), ("45 dias", "45"), ("60 dias", "60"), ("90 dias", "90")]:
+        if not db.query(models.PaymentCondition).filter(models.PaymentCondition.name == name).first():
+            db.add(models.PaymentCondition(name=name, installment_days=days))
     db.flush()
     for sale in db.query(models.Sale).filter(models.Sale.status == "confirmada").all():
         if sale.customer_link and not db.query(models.Receivable).filter(models.Receivable.sale_id == sale.id).first():
             due_date = sale.payment_term.due_date if sale.payment_term else sale.occurred_at.date()
             db.add(models.Receivable(sale_id=sale.id, customer_id=sale.customer_link.customer_id, seller_id=sale.seller_id, due_date=due_date, original_amount=sale.total_value, status="aberto"))
+    db.flush()
+    for receivable in db.query(models.Receivable).all():
+        if not receivable.installments:
+            receivable.installments.append(models.ReceivableInstallment(installment_number=1, due_date=receivable.due_date, original_amount=receivable.original_amount, paid_amount=receivable.paid_amount, status=receivable.status))
     db.flush()
     permission_rows = {}
     for code, name in PERMISSION_NAMES.items():

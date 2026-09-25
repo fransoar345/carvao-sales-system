@@ -244,10 +244,22 @@ def financial_account_balance(db: Session, account: models.FinancialAccount) -> 
     return account.initial_balance + float(entries) - float(exits)
 
 
-def create_receivable(db: Session, sale: models.Sale, customer_id: int, due_date: date, user: models.User):
+def create_receivable(db: Session, sale: models.Sale, customer_id: int, due_date: date, user: models.User, payment_condition_id: int | None = None):
+    condition = db.get(models.PaymentCondition, payment_condition_id) if payment_condition_id else None
+    if payment_condition_id and (not condition or not condition.active): raise HTTPException(404, "Condicao de pagamento nao encontrada")
+    days = [int(value) for value in condition.installment_days.split(",")] if condition else [(due_date - sale.occurred_at.date()).days]
+    if not days: days = [0]
     receivable = models.Receivable(sale_id=sale.id, customer_id=customer_id, seller_id=sale.seller_id, due_date=due_date, original_amount=sale.total_value, status="aberto")
     db.add(receivable)
     db.flush()
+    allocated = 0.0
+    for index, days_until_due in enumerate(days, start=1):
+        amount = round(sale.total_value / len(days), 2) if index < len(days) else round(sale.total_value - allocated, 2)
+        allocated += amount
+        receivable.installments.append(models.ReceivableInstallment(installment_number=index, due_date=sale.occurred_at.date() + timedelta(days=days_until_due), original_amount=amount, status="aberto"))
+    receivable.due_date = min(item.due_date for item in receivable.installments)
+    if condition:
+        db.add(models.SaleFinancialPlan(sale_id=sale.id, payment_condition_id=condition.id))
     if sale.payment_method != "prazo":
         account = db.query(models.FinancialAccount).filter(models.FinancialAccount.active.is_(True)).first()
         if account:
@@ -256,7 +268,50 @@ def create_receivable(db: Session, sale: models.Sale, customer_id: int, due_date
             db.add(models.CashTransaction(account_id=account.id, direction="entrada", amount=sale.total_value, source_type="receivable_payment", source_id=payment.id, description=f"Recebimento automatico da venda #{sale.id}", responsible_id=user.id))
             receivable.paid_amount = sale.total_value
             receivable.status = "pago"
+            for installment in receivable.installments:
+                installment.paid_amount = installment.original_amount
+                installment.status = "pago"
     return receivable
+
+
+def validate_customer_credit(db: Session, customer: models.Customer, amount: float, condition_id: int | None, override_reason: str | None, user: models.User, exclude_sale_id: int | None = None):
+    profile = db.get(models.CustomerCreditProfile, customer.id)
+    if not profile:
+        return
+    condition = db.get(models.PaymentCondition, condition_id) if condition_id else None
+    max_days = max((int(value) for value in condition.installment_days.split(",")), default=0) if condition else 0
+    query = db.query(models.Receivable).filter(models.Receivable.customer_id == customer.id, models.Receivable.status.in_(["aberto", "parcial"]))
+    if exclude_sale_id: query = query.filter(models.Receivable.sale_id != exclude_sale_id)
+    open_rows = query.all()
+    used = sum(max(0, row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount - row.paid_amount) for row in open_rows)
+    overdue = any(row.due_date + timedelta(days=profile.tolerance_days) < date.today() for row in open_rows)
+    blocked = (profile.credit_limit > 0 and used + amount > profile.credit_limit) or max_days > profile.max_term_days or (profile.block_overdue and overdue)
+    if blocked:
+        if not has_permission(user, "customers.change_credit_limit") or not override_reason:
+            raise HTTPException(403, f"Credito bloqueado. Utilizado R$ {used:.2f}, limite R$ {profile.credit_limit:.2f}")
+        audit(db, user, "credit_override", "customer", customer.id, f"Venda R$ {amount:.2f}; Motivo={override_reason}")
+
+
+def rebuild_receivable_payment_status(receivable: models.Receivable):
+    for installment in receivable.installments:
+        installment.paid_amount = 0
+        installment.status = "aberto"
+    total_paid = sum(payment.amount for payment in receivable.payments if not payment.reversed)
+    remaining = total_paid
+    for installment in receivable.installments:
+        applied = min(remaining, installment.original_amount)
+        installment.paid_amount = applied
+        installment.status = "pago" if applied >= installment.original_amount else ("parcial" if applied else "aberto")
+        remaining -= applied
+    receivable.paid_amount = total_paid
+    total_due = receivable.original_amount + receivable.interest_amount + receivable.fine_amount - receivable.discount_amount
+    receivable.status = "pago" if total_paid >= total_due else ("parcial" if total_paid else "aberto")
+
+
+def rebuild_payable_payment_status(payable: models.Payable):
+    total_paid = sum(payment.amount for payment in payable.payments if not payment.reversed)
+    payable.paid_amount = total_paid
+    payable.status = "pago" if total_paid >= payable.original_amount else ("parcial" if total_paid else "aberto")
 
 
 @app.get("/api/health")
@@ -680,13 +735,19 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
         sale.items.append(models.SaleItem(product_id=product.id, quantity=item.quantity, unit_price=unit_price, subtotal=subtotal))
         db.add(models.StockMovement(product_id=product.id, movement_type="saida", quantity=item.quantity, responsible_id=user.id, note="Baixa automatica por venda"))
     sale.total_value = total
+    condition = db.get(models.PaymentCondition, payload.payment_condition_id) if payload.payment_condition_id else None
+    if payload.payment_condition_id and (not condition or not condition.active): raise HTTPException(404, "Condicao de pagamento nao encontrada")
+    condition_days = [int(value) for value in condition.installment_days.split(",")] if condition else []
+    financial_due_date = payload.payment_due_date or (datetime.utcnow().date() + timedelta(days=max(condition_days, default=0)))
+    if payload.payment_method == "prazo":
+        validate_customer_credit(db, customer, total, payload.payment_condition_id, payload.credit_override_reason, user)
     db.add(sale)
     db.flush()
     sale.customer_link = models.SaleCustomerLink(customer_id=customer.id, price_table_id=price_table.id)
     if payload.payment_method == "prazo":
-        sale.payment_term = models.SalePaymentTerm(due_date=payload.payment_due_date)
+        sale.payment_term = models.SalePaymentTerm(due_date=financial_due_date)
     sale.delivery_detail = models.SaleDeliveryDetail(delivery_address=payload.delivery_address.strip())
-    create_receivable(db, sale, customer.id, payload.payment_due_date or datetime.utcnow().date(), user)
+    create_receivable(db, sale, customer.id, financial_due_date, user, payload.payment_condition_id)
     audit(db, user, "create", "sale", sale.id, f"Venda R$ {sale.total_value:.2f}")
     db.commit()
     sale = db.query(models.Sale).options(*sale_load_options()).get(sale.id)
@@ -708,6 +769,9 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     if not seller or not seller.active:
         raise HTTPException(404, "Vendedor nao encontrado")
     customer, price_table, prices = resolve_customer_prices(db, payload.customer_id, payload.seller_id, [item.product_id for item in payload.items])
+    condition = db.get(models.PaymentCondition, payload.payment_condition_id) if payload.payment_condition_id else None
+    if payload.payment_condition_id and (not condition or not condition.active): raise HTTPException(404, "Condicao de pagamento nao encontrada")
+    financial_due_date = payload.payment_due_date or (sale.occurred_at.date() + timedelta(days=max(int(value) for value in condition.installment_days.split(","))) if condition else sale.occurred_at.date())
 
     restored_by_product: dict[int, float] = {}
     for old_item in sale.items:
@@ -718,6 +782,10 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     products = {product.id: product for product in db.query(models.Product).filter(models.Product.id.in_(list(requested_by_product))).all()}
     if len(products) != len(requested_by_product) or any(not product.active for product in products.values()):
         raise HTTPException(404, "Um ou mais produtos estao indisponiveis")
+    total_preview = sum(quantity * prices[product_id] for product_id, quantity in requested_by_product.items())
+    receivable = db.query(models.Receivable).options(joinedload(models.Receivable.payments), joinedload(models.Receivable.installments)).filter(models.Receivable.sale_id == sale.id).first()
+    if receivable and payload.payment_method == "prazo" and any(not payment.reversed for payment in receivable.payments): raise HTTPException(400, "Estorne as baixas antes de alterar uma venda a prazo")
+    if payload.payment_method == "prazo": validate_customer_credit(db, customer, total_preview, payload.payment_condition_id, payload.credit_override_reason, user, sale.id)
     for product_id, quantity in requested_by_product.items():
         available = products[product_id].current_stock + restored_by_product.get(product_id, 0)
         if available < quantity:
@@ -744,9 +812,9 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     else: sale.delivery_detail = models.SaleDeliveryDetail(delivery_address=payload.delivery_address.strip())
     if payload.payment_method == "prazo":
         if sale.payment_term:
-            sale.payment_term.due_date = payload.payment_due_date
+            sale.payment_term.due_date = financial_due_date
         else:
-            sale.payment_term = models.SalePaymentTerm(due_date=payload.payment_due_date)
+            sale.payment_term = models.SalePaymentTerm(due_date=financial_due_date)
     elif sale.payment_term:
         db.delete(sale.payment_term)
         sale.payment_term = None
@@ -756,13 +824,25 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
         sale.customer_link.price_table_id = price_table.id
     else:
         sale.customer_link = models.SaleCustomerLink(customer_id=customer.id, price_table_id=price_table.id)
-    receivable = db.query(models.Receivable).options(joinedload(models.Receivable.payments)).filter(models.Receivable.sale_id == sale.id).first()
     if receivable:
         receivable.customer_id = customer.id
         receivable.seller_id = sale.seller_id
-        receivable.due_date = payload.payment_due_date or sale.occurred_at.date()
+        receivable.due_date = financial_due_date
         receivable.original_amount = total
         active_payments = [payment for payment in receivable.payments if not payment.reversed]
+        receivable.installments.clear()
+        db.flush()
+        days = [int(value) for value in condition.installment_days.split(",")] if condition else [(financial_due_date - sale.occurred_at.date()).days]
+        base_amount = round(total / len(days), 2)
+        allocated = 0.0
+        for number, day_count in enumerate(days, start=1):
+            amount = round(total - allocated, 2) if number == len(days) else base_amount; allocated += amount
+            receivable.installments.append(models.ReceivableInstallment(installment_number=number, due_date=sale.occurred_at.date() + timedelta(days=day_count), original_amount=amount))
+        plan = db.get(models.SaleFinancialPlan, sale.id)
+        if condition:
+            if plan: plan.payment_condition_id = condition.id
+            else: db.add(models.SaleFinancialPlan(sale_id=sale.id, payment_condition_id=condition.id))
+        elif plan: db.delete(plan)
         receivable.paid_amount = sum(payment.amount for payment in active_payments)
         receivable.status = "pago" if receivable.paid_amount >= total else ("parcial" if receivable.paid_amount else "aberto")
         if len(active_payments) == 1 and sale.payment_method != "prazo":
@@ -770,6 +850,7 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
             receivable.paid_amount = total
             receivable.status = "pago"
             db.query(models.CashTransaction).filter(models.CashTransaction.source_type == "receivable_payment", models.CashTransaction.source_id == active_payments[0].id).update({models.CashTransaction.amount: total})
+        rebuild_receivable_payment_status(receivable)
     audit(db, user, "update", "sale", sale.id, f"Venda alterada para R$ {sale.total_value:.2f}")
     db.commit()
     updated = db.query(models.Sale).options(*sale_load_options()).filter(models.Sale.id == sale.id).first()
@@ -1062,6 +1143,42 @@ def create_cost_center(payload: schemas.NamedEntityCreate, db: Session = Depends
     row = models.CostCenter(name=payload.name.strip()); db.add(row); db.flush(); audit(db, user, "create", "cost_center", row.id, row.name); db.commit(); db.refresh(row); return row
 
 
+@app.get("/api/finance/payment-conditions")
+def list_payment_conditions(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    rows = db.query(models.PaymentCondition).order_by(models.PaymentCondition.name).all()
+    return [{"id": row.id, "name": row.name, "installment_days": [int(value) for value in row.installment_days.split(",") if value != ""], "interest_percent_month": row.interest_percent_month, "fine_percent": row.fine_percent, "active": row.active} for row in rows]
+
+
+@app.post("/api/finance/payment-conditions")
+def create_payment_condition(payload: schemas.PaymentConditionCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("settings.financial"))):
+    days = sorted(set(payload.installment_days))
+    if any(day < 0 for day in days): raise HTTPException(400, "Os prazos nao podem ser negativos")
+    if db.query(models.PaymentCondition).filter(func.lower(models.PaymentCondition.name) == payload.name.strip().lower()).first(): raise HTTPException(400, "Condicao de pagamento ja cadastrada")
+    row = models.PaymentCondition(name=payload.name.strip(), installment_days=",".join(str(day) for day in days), interest_percent_month=payload.interest_percent_month, fine_percent=payload.fine_percent, active=payload.active)
+    db.add(row); db.flush(); audit(db, user, "create", "payment_condition", row.id, f"{row.name}: {row.installment_days} dias"); db.commit()
+    return {"id": row.id, "name": row.name, "installment_days": days, "interest_percent_month": row.interest_percent_month, "fine_percent": row.fine_percent, "active": row.active}
+
+
+@app.get("/api/finance/customers/{customer_id}/credit")
+def read_customer_credit(customer_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("customers.view_financial_history", "customers.change_credit_limit", match_all=False))):
+    customer = db.get(models.Customer, customer_id)
+    if not customer: raise HTTPException(404, "Cliente nao encontrado")
+    row = db.get(models.CustomerCreditProfile, customer_id)
+    open_rows = db.query(models.Receivable).filter(models.Receivable.customer_id == customer_id, models.Receivable.status.in_(["aberto", "parcial"])).all()
+    used = sum(max(0, item.original_amount + item.interest_amount + item.fine_amount - item.discount_amount - item.paid_amount) for item in open_rows)
+    values = {"credit_limit": 0, "max_term_days": 30, "block_overdue": True, "tolerance_days": 0} if not row else {"credit_limit": row.credit_limit, "max_term_days": row.max_term_days, "block_overdue": row.block_overdue, "tolerance_days": row.tolerance_days}
+    return {"customer_id": customer_id, "customer_name": customer.legal_name, "used_credit": used, "available_credit": max(0, values["credit_limit"] - used) if values["credit_limit"] > 0 else None, **values}
+
+
+@app.put("/api/finance/customers/{customer_id}/credit")
+def update_customer_credit(customer_id: int, payload: schemas.CustomerCreditUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("customers.change_credit_limit"))):
+    if not db.get(models.Customer, customer_id): raise HTTPException(404, "Cliente nao encontrado")
+    row = db.get(models.CustomerCreditProfile, customer_id) or models.CustomerCreditProfile(customer_id=customer_id)
+    for key, value in payload.model_dump().items(): setattr(row, key, value)
+    db.add(row); audit(db, user, "update_credit", "customer", customer_id, f"Limite R$ {row.credit_limit:.2f}; prazo {row.max_term_days} dias"); db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/finance/suppliers", response_model=list[schemas.SupplierOut])
 def list_suppliers(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_payables"))):
     return db.query(models.Supplier).filter(models.Supplier.active.is_(True)).order_by(models.Supplier.name).all()
@@ -1074,22 +1191,59 @@ def create_supplier(payload: schemas.SupplierCreate, db: Session = Depends(get_d
 
 @app.get("/api/finance/receivables")
 def list_receivables(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_receivables"))):
-    rows = db.query(models.Receivable).options(joinedload(models.Receivable.customer), joinedload(models.Receivable.seller)).order_by(models.Receivable.due_date).all()
+    rows = db.query(models.Receivable).options(joinedload(models.Receivable.customer), joinedload(models.Receivable.seller), joinedload(models.Receivable.installments)).order_by(models.Receivable.due_date).all()
     today = date.today()
-    return [{"id": row.id, "sale_id": row.sale_id, "customer_name": row.customer.legal_name, "seller_name": row.seller.name, "due_date": row.due_date, "original_amount": row.original_amount, "paid_amount": row.paid_amount, "balance": max(0, row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount - row.paid_amount), "status": "vencido" if row.status in {"aberto", "parcial"} and row.due_date < today else row.status} for row in rows]
+    return [{"id": row.id, "sale_id": row.sale_id, "customer_id": row.customer_id, "customer_name": row.customer.legal_name, "seller_name": row.seller.name, "due_date": row.due_date, "original_amount": row.original_amount, "interest_amount": row.interest_amount, "fine_amount": row.fine_amount, "discount_amount": row.discount_amount, "paid_amount": row.paid_amount, "balance": max(0, row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount - row.paid_amount), "status": "vencido" if row.status in {"aberto", "parcial"} and row.due_date < today else row.status, "installments": [{"number": item.installment_number, "due_date": item.due_date, "original_amount": item.original_amount, "paid_amount": item.paid_amount, "status": "vencido" if item.status in {"aberto", "parcial"} and item.due_date < today else item.status} for item in row.installments]} for row in rows]
 
 
 @app.post("/api/finance/receivables/{receivable_id}/payments")
 def receive_payment(receivable_id: int, payload: schemas.FinancialPaymentCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.settle_titles"))):
-    row = db.get(models.Receivable, receivable_id); account = db.get(models.FinancialAccount, payload.account_id)
+    row = db.query(models.Receivable).options(joinedload(models.Receivable.installments), joinedload(models.Receivable.payments)).filter(models.Receivable.id == receivable_id).first(); account = db.get(models.FinancialAccount, payload.account_id)
     if not row or row.status == "cancelado": raise HTTPException(404, "Titulo a receber nao encontrado")
     if not account or not account.active: raise HTTPException(404, "Conta financeira nao encontrada")
     balance = row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount - row.paid_amount
     if payload.amount > balance + 0.001: raise HTTPException(400, "Valor maior que o saldo em aberto")
-    payment = models.ReceivablePayment(receivable_id=row.id, account_id=account.id, amount=payload.amount, payment_method=payload.payment_method, occurred_at=payload.occurred_at or datetime.utcnow(), note=payload.note, responsible_id=user.id)
-    db.add(payment); db.flush(); row.paid_amount += payload.amount; row.status = "pago" if row.paid_amount >= row.original_amount + row.interest_amount + row.fine_amount - row.discount_amount else "parcial"
+    payment = models.ReceivablePayment(account_id=account.id, amount=payload.amount, payment_method=payload.payment_method, occurred_at=payload.occurred_at or datetime.utcnow(), note=payload.note, responsible_id=user.id)
+    row.payments.append(payment); db.flush(); rebuild_receivable_payment_status(row)
     db.add(models.CashTransaction(account_id=account.id, direction="entrada", amount=payload.amount, occurred_at=payment.occurred_at, source_type="receivable_payment", source_id=payment.id, description=f"Recebimento do titulo #{row.id}", responsible_id=user.id))
     audit(db, user, "receive", "receivable", row.id, f"Baixa R$ {payload.amount:.2f}"); db.commit(); return {"ok": True, "status": row.status, "paid_amount": row.paid_amount}
+
+
+@app.post("/api/finance/receivables/{receivable_id}/adjustments")
+def adjust_receivable(receivable_id: int, payload: schemas.ReceivableAdjustment, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.edit_receivables"))):
+    row = db.query(models.Receivable).options(joinedload(models.Receivable.installments), joinedload(models.Receivable.payments)).filter(models.Receivable.id == receivable_id).first()
+    if not row or row.status == "cancelado": raise HTTPException(404, "Titulo a receber nao encontrado")
+    row.interest_amount = payload.interest_amount; row.fine_amount = payload.fine_amount; row.discount_amount = payload.discount_amount
+    if row.discount_amount > row.original_amount + row.interest_amount + row.fine_amount: raise HTTPException(400, "Desconto maior que o valor do titulo")
+    rebuild_receivable_payment_status(row); audit(db, user, "adjust", "receivable", row.id, payload.reason); db.commit()
+    return {"ok": True, "status": row.status}
+
+
+@app.get("/api/finance/receivables/{receivable_id}/collections")
+def list_collection_events(receivable_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_receivables"))):
+    rows = db.query(models.CollectionEvent).filter(models.CollectionEvent.receivable_id == receivable_id).order_by(models.CollectionEvent.created_at.desc()).all()
+    return [{"id": row.id, "contact_type": row.contact_type, "notes": row.notes, "next_contact_date": row.next_contact_date, "created_at": row.created_at} for row in rows]
+
+
+@app.post("/api/finance/receivables/{receivable_id}/collections")
+def create_collection_event(receivable_id: int, payload: schemas.CollectionEventCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.edit_receivables"))):
+    if not db.get(models.Receivable, receivable_id): raise HTTPException(404, "Titulo a receber nao encontrado")
+    row = models.CollectionEvent(receivable_id=receivable_id, responsible_id=user.id, **payload.model_dump()); db.add(row); db.flush(); audit(db, user, "collection", "receivable", receivable_id, payload.notes); db.commit()
+    return {"id": row.id, "ok": True}
+
+
+@app.get("/api/finance/receivables/{receivable_id}/payments")
+def list_receivable_payments(receivable_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_receivables"))):
+    rows = db.query(models.ReceivablePayment).options(joinedload(models.ReceivablePayment.account)).filter(models.ReceivablePayment.receivable_id == receivable_id).order_by(models.ReceivablePayment.occurred_at.desc()).all()
+    return [{"id": row.id, "amount": row.amount, "payment_method": row.payment_method, "occurred_at": row.occurred_at, "account_name": row.account.name, "reversed": row.reversed, "note": row.note} for row in rows]
+
+
+@app.post("/api/finance/receivable-payments/{payment_id}/reverse")
+def reverse_receivable_payment(payment_id: int, payload: schemas.ReversalCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.reverse_payments"))):
+    payment = db.query(models.ReceivablePayment).options(joinedload(models.ReceivablePayment.receivable).joinedload(models.Receivable.installments), joinedload(models.ReceivablePayment.receivable).joinedload(models.Receivable.payments)).filter(models.ReceivablePayment.id == payment_id).first()
+    if not payment or payment.reversed: raise HTTPException(404, "Baixa ativa nao encontrada")
+    payment.reversed = True; db.query(models.CashTransaction).filter(models.CashTransaction.source_type == "receivable_payment", models.CashTransaction.source_id == payment.id).update({models.CashTransaction.reversed: True}); rebuild_receivable_payment_status(payment.receivable)
+    audit(db, user, "reverse_payment", "receivable", payment.receivable_id, payload.reason); db.commit(); return {"ok": True}
 
 
 @app.get("/api/finance/payables")
@@ -1115,6 +1269,20 @@ def pay_payable(payable_id: int, payload: schemas.FinancialPaymentCreate, db: Se
     db.add(payment); db.flush(); row.paid_amount += payload.amount; row.status = "pago" if row.paid_amount >= row.original_amount else "parcial"
     db.add(models.CashTransaction(account_id=account.id, direction="saida", amount=payload.amount, occurred_at=payment.occurred_at, source_type="payable_payment", source_id=payment.id, description=f"Pagamento da conta #{row.id}: {row.description}", responsible_id=user.id))
     audit(db, user, "pay", "payable", row.id, f"Pagamento R$ {payload.amount:.2f}"); db.commit(); return {"ok": True, "status": row.status, "paid_amount": row.paid_amount}
+
+
+@app.get("/api/finance/payables/{payable_id}/payments")
+def list_payable_payments(payable_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_payables"))):
+    rows = db.query(models.PayablePayment).options(joinedload(models.PayablePayment.account)).filter(models.PayablePayment.payable_id == payable_id).order_by(models.PayablePayment.occurred_at.desc()).all()
+    return [{"id": row.id, "amount": row.amount, "occurred_at": row.occurred_at, "account_name": row.account.name, "reversed": row.reversed, "note": row.note} for row in rows]
+
+
+@app.post("/api/finance/payable-payments/{payment_id}/reverse")
+def reverse_payable_payment(payment_id: int, payload: schemas.ReversalCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.reverse_payments"))):
+    payment = db.query(models.PayablePayment).options(joinedload(models.PayablePayment.payable).joinedload(models.Payable.payments)).filter(models.PayablePayment.id == payment_id).first()
+    if not payment or payment.reversed: raise HTTPException(404, "Baixa ativa nao encontrada")
+    payment.reversed = True; db.query(models.CashTransaction).filter(models.CashTransaction.source_type == "payable_payment", models.CashTransaction.source_id == payment.id).update({models.CashTransaction.reversed: True}); rebuild_payable_payment_status(payment.payable)
+    audit(db, user, "reverse_payment", "payable", payment.payable_id, payload.reason); db.commit(); return {"ok": True}
 
 
 @app.get("/api/finance/cash-flow")

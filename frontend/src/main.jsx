@@ -113,7 +113,7 @@ function App() {
         {tab === "products" && <Products api={api} user={user} />}
         {tab === "stock" && <Stock api={api} user={user} />}
         {tab === "deliveries" && <Deliveries api={api} token={token} />}
-        {tab === "finance" && <Finance api={api} />}
+        {tab === "finance" && <Finance api={api} user={user} />}
         {tab === "access" && <><NewAccessUser api={api} /><AccessControl api={api} /></>}
         {tab === "sellers" && <Sellers api={api} user={user} />}
         {tab === "whatsapp" && <WhatsApp api={api} />}
@@ -704,6 +704,7 @@ function Sales({ api, user }) {
     product_id: "",
     quantity: 1,
     payment_method: "pix",
+    payment_condition_id: "",
     payment_due_date: "",
     delivery_address: "",
     manual_address: false,
@@ -715,6 +716,7 @@ function Sales({ api, user }) {
   const sellers = useLoad(api, () => api.call("/sellers"), []).data || [];
   const customersLoad = useLoad(api, () => api.call("/customers"), []);
   const tables = useLoad(api, () => api.call("/price-tables"), []).data || [];
+  const paymentConditions = useLoad(api, () => api.call("/finance/payment-conditions"), []).data || [];
   const [showCustomer, setShowCustomer] = useState(false);
   const [customerForm, setCustomerForm] = useState(emptyCustomer);
   const { data: sales, reload } = useLoad(api, () => api.call("/sales"), []);
@@ -731,6 +733,7 @@ function Sales({ api, user }) {
       seller_id: form.seller_id ? Number(form.seller_id) : undefined,
       customer_id: Number(form.customer_id),
       payment_method: form.payment_method,
+      payment_condition_id: form.payment_method === "prazo" && form.payment_condition_id ? Number(form.payment_condition_id) : null,
       payment_due_date: form.payment_method === "prazo" ? form.payment_due_date : null,
       delivery_address: form.delivery_address,
       items: [
@@ -763,6 +766,7 @@ function Sales({ api, user }) {
       product_id: String(item.product_id),
       quantity: item.quantity,
       payment_method: sale.payment_method,
+      payment_condition_id: "",
       payment_due_date: sale.payment_due_date || "",
       delivery_address: sale.delivery_address || "",
       manual_address: false,
@@ -888,10 +892,19 @@ function Sales({ api, user }) {
           </select>
         </label>
         {form.payment_method === "prazo" && (
-          <label className="field">
-            <span>Data de vencimento</span>
-            <input type="date" value={form.payment_due_date} onChange={(e) => setForm({ ...form, payment_due_date: e.target.value })} required />
-          </label>
+          <>
+            <label className="field">
+              <span>Condicao de pagamento</span>
+              <select value={form.payment_condition_id} onChange={(e) => setForm({ ...form, payment_condition_id: e.target.value, payment_due_date: e.target.value ? "" : form.payment_due_date })}>
+                <option value="">Vencimento manual</option>
+                {paymentConditions.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.installment_days.length} parcela(s)</option>)}
+              </select>
+            </label>
+            {!form.payment_condition_id && <label className="field">
+              <span>Data de vencimento</span>
+              <input type="date" value={form.payment_due_date} onChange={(e) => setForm({ ...form, payment_due_date: e.target.value })} required />
+            </label>}
+          </>
         )}
         <button className="primary big">
           <ReceiptText size={18} /> {editingId ? "Salvar alteracoes" : "Confirmar Venda"}
@@ -1215,7 +1228,7 @@ function AccessControl({ api }) {
   </section>;
 }
 
-function Finance({ api }) {
+function Finance({ api, user }) {
   const today = new Date().toISOString().slice(0, 10);
   const dashboard = useLoad(api, () => api.call("/finance/dashboard"), []);
   const receivables = useLoad(api, () => api.call("/finance/receivables"), []);
@@ -1224,9 +1237,11 @@ function Finance({ api }) {
   const suppliers = useLoad(api, () => api.call("/finance/suppliers"), []);
   const centers = useLoad(api, () => api.call("/finance/cost-centers"), []);
   const cashFlow = useLoad(api, () => api.call("/finance/cash-flow"), []);
+  const conditions = useLoad(api, () => api.call("/finance/payment-conditions"), []);
   const [message, setMessage] = useState("");
   const [payable, setPayable] = useState({ supplier_id: "", cost_center_id: "", category: "despesa", description: "", competence_date: today, due_date: today, original_amount: 0, notes: "" });
   const [supplier, setSupplier] = useState({ name: "", document: "", phone: "", email: "" });
+  const [condition, setCondition] = useState({ name: "", installment_days: "30", interest_percent_month: 0, fine_percent: 0 });
   const refresh = () => { dashboard.reload(); receivables.reload(); payables.reload(); accounts.reload(); cashFlow.reload(); };
   async function addPayable(e) {
     e.preventDefault(); setMessage("");
@@ -1245,6 +1260,40 @@ function Finance({ api }) {
     if (!amount || amount <= 0) return setMessage("Informe um valor valido.");
     try { await api.call(`/finance/${kind}/${row.id}/payments`, { method: "POST", body: JSON.stringify({ account_id: defaultAccount.id, amount, payment_method: "pix" }) }); setMessage("Baixa registrada com sucesso."); refresh(); } catch (error) { setMessage(error.message); }
   }
+  async function addCondition(e) {
+    e.preventDefault();
+    const days = condition.installment_days.split(",").map((value) => Number(value.trim())).filter((value) => Number.isFinite(value));
+    try { await api.call("/finance/payment-conditions", { method: "POST", body: JSON.stringify({ ...condition, installment_days: days, interest_percent_month: Number(condition.interest_percent_month), fine_percent: Number(condition.fine_percent) }) }); setCondition({ name: "", installment_days: "30", interest_percent_month: 0, fine_percent: 0 }); conditions.reload(); setMessage("Condicao de pagamento cadastrada."); } catch (error) { setMessage(error.message); }
+  }
+  async function adjust(row) {
+    const interest = window.prompt("Juros acumulados (R$)", String(row.interest_amount || 0)); if (interest == null) return;
+    const fine = window.prompt("Multa (R$)", String(row.fine_amount || 0)); if (fine == null) return;
+    const discount = window.prompt("Desconto (R$)", String(row.discount_amount || 0)); if (discount == null) return;
+    const reason = window.prompt("Motivo do ajuste"); if (!reason) return;
+    try { await api.call(`/finance/receivables/${row.id}/adjustments`, { method: "POST", body: JSON.stringify({ interest_amount: Number(interest.replace(",", ".")), fine_amount: Number(fine.replace(",", ".")), discount_amount: Number(discount.replace(",", ".")), reason }) }); setMessage("Titulo ajustado."); refresh(); } catch (error) { setMessage(error.message); }
+  }
+  async function collect(row) {
+    const notes = window.prompt(`Registro de cobranca para ${row.customer_name}`); if (!notes) return;
+    try { await api.call(`/finance/receivables/${row.id}/collections`, { method: "POST", body: JSON.stringify({ contact_type: "telefone", notes, next_contact_date: null }) }); setMessage("Cobranca registrada no historico."); } catch (error) { setMessage(error.message); }
+  }
+  async function reverseLast(kind, row) {
+    try {
+      const payments = await api.call(`/finance/${kind}/${row.id}/payments`);
+      const payment = payments.find((item) => !item.reversed);
+      if (!payment) return setMessage("Nao existe baixa ativa para estornar.");
+      const reason = window.prompt(`Motivo do estorno de ${money(payment.amount)}`); if (!reason) return;
+      const path = kind === "receivables" ? "receivable-payments" : "payable-payments";
+      await api.call(`/finance/${path}/${payment.id}/reverse`, { method: "POST", body: JSON.stringify({ reason }) }); setMessage("Baixa estornada e fluxo de caixa recalculado."); refresh();
+    } catch (error) { setMessage(error.message); }
+  }
+  async function configureCredit(row) {
+    try {
+      const current = await api.call(`/finance/customers/${row.customer_id}/credit`);
+      const limit = window.prompt(`Limite de credito de ${row.customer_name}`, String(current.credit_limit)); if (limit == null) return;
+      const term = window.prompt("Prazo maximo em dias", String(current.max_term_days)); if (term == null) return;
+      await api.call(`/finance/customers/${row.customer_id}/credit`, { method: "PUT", body: JSON.stringify({ credit_limit: Number(limit.replace(",", ".")), max_term_days: Number(term), block_overdue: current.block_overdue, tolerance_days: current.tolerance_days }) }); setMessage("Regra de credito atualizada.");
+    } catch (error) { setMessage(error.message); }
+  }
   if (!dashboard.data) return <Loading />;
   return <section className="finance-page">
     <div className="grid finance-metrics">
@@ -1257,13 +1306,14 @@ function Finance({ api }) {
     </div>
     {message && <p className="panel form-status">{message}</p>}
     <div className="finance-columns">
-      <Panel title="Contas a receber">{(receivables.data || []).map((row) => <Row key={row.id} title={`${row.customer_name} · ${money(row.balance)}`} meta={`Venda #${row.sale_id} · ${new Date(`${row.due_date}T12:00:00`).toLocaleDateString("pt-BR")} · ${row.status} · ${row.seller_name}`} actions={row.balance > 0 && row.status !== "cancelado" ? <button onClick={() => settle("receivables", row)}>Receber</button> : null} />)}</Panel>
-      <Panel title="Contas a pagar">{(payables.data || []).map((row) => <Row key={row.id} title={`${row.description} · ${money(row.balance)}`} meta={`${row.supplier_name || "Sem fornecedor"} · ${row.cost_center_name} · ${new Date(`${row.due_date}T12:00:00`).toLocaleDateString("pt-BR")} · ${row.status}`} actions={row.balance > 0 && row.status !== "cancelado" ? <button onClick={() => settle("payables", row)}>Pagar</button> : null} />)}</Panel>
+      <Panel title="Contas a receber">{(receivables.data || []).map((row) => <Row key={row.id} title={`${row.customer_name} · ${money(row.balance)}`} meta={`Venda #${row.sale_id} · ${row.installments.length} parcela(s): ${row.installments.map((item) => `${item.number}/${new Date(`${item.due_date}T12:00:00`).toLocaleDateString("pt-BR")} ${item.status}`).join("; ")} · ${row.status} · ${row.seller_name}`} actions={<>{row.balance > 0 && row.status !== "cancelado" && <button onClick={() => settle("receivables", row)}>Receber</button>}{allowed(user, "finance.edit_receivables") && <button onClick={() => adjust(row)}>Ajustar</button>}{allowed(user, "finance.edit_receivables") && <button onClick={() => collect(row)}>Cobranca</button>}{allowed(user, "customers.change_credit_limit") && <button onClick={() => configureCredit(row)}>Credito</button>}{allowed(user, "finance.reverse_payments") && row.paid_amount > 0 && <button onClick={() => reverseLast("receivables", row)}>Estornar</button>}</>} />)}</Panel>
+      <Panel title="Contas a pagar">{(payables.data || []).map((row) => <Row key={row.id} title={`${row.description} · ${money(row.balance)}`} meta={`${row.supplier_name || "Sem fornecedor"} · ${row.cost_center_name} · ${new Date(`${row.due_date}T12:00:00`).toLocaleDateString("pt-BR")} · ${row.status}`} actions={<>{row.balance > 0 && row.status !== "cancelado" && <button onClick={() => settle("payables", row)}>Pagar</button>}{allowed(user, "finance.reverse_payments") && row.paid_amount > 0 && <button onClick={() => reverseLast("payables", row)}>Estornar</button>}</>} />)}</Panel>
     </div>
     <div className="finance-columns">
       <form className="panel form" onSubmit={addPayable}><h2>Nova conta a pagar</h2><label className="field"><span>Descricao</span><input value={payable.description} onChange={(e) => setPayable({ ...payable, description: e.target.value })} required /></label><label className="field"><span>Fornecedor</span><select value={payable.supplier_id} onChange={(e) => setPayable({ ...payable, supplier_id: e.target.value })}><option value="">Sem fornecedor</option>{(suppliers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Centro de custo</span><select value={payable.cost_center_id} onChange={(e) => setPayable({ ...payable, cost_center_id: e.target.value })} required><option value="">Selecione</option>{(centers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Categoria</span><input value={payable.category} onChange={(e) => setPayable({ ...payable, category: e.target.value })} required /></label><label className="field"><span>Competencia</span><input type="date" value={payable.competence_date} onChange={(e) => setPayable({ ...payable, competence_date: e.target.value })} required /></label><label className="field"><span>Vencimento</span><input type="date" value={payable.due_date} onChange={(e) => setPayable({ ...payable, due_date: e.target.value })} required /></label><label className="field"><span>Valor</span><input type="number" min="0.01" step="0.01" value={payable.original_amount} onChange={(e) => setPayable({ ...payable, original_amount: e.target.value })} required /></label><button className="primary"><Save size={16} /> Salvar despesa</button></form>
       <form className="panel form" onSubmit={addSupplier}><h2>Novo fornecedor</h2><label className="field"><span>Nome / Razao social</span><input value={supplier.name} onChange={(e) => setSupplier({ ...supplier, name: e.target.value })} required /></label><label className="field"><span>CNPJ ou CPF</span><input value={supplier.document} onChange={(e) => setSupplier({ ...supplier, document: e.target.value })} /></label><label className="field"><span>Telefone</span><input value={supplier.phone} onChange={(e) => setSupplier({ ...supplier, phone: e.target.value })} /></label><label className="field"><span>E-mail</span><input type="email" value={supplier.email} onChange={(e) => setSupplier({ ...supplier, email: e.target.value })} /></label><button className="primary"><Save size={16} /> Salvar fornecedor</button><h2 className="finance-subtitle">Contas e saldos</h2>{(accounts.data || []).map((row) => <Row key={row.id} title={row.name} meta={`${row.account_type} · ${money(row.balance)}`} />)}</form>
     </div>
+    {allowed(user, "settings.financial") && <form className="panel form max" onSubmit={addCondition}><h2>Condicoes de pagamento</h2><label className="field"><span>Nome</span><input value={condition.name} onChange={(e) => setCondition({ ...condition, name: e.target.value })} placeholder="Ex.: 30 / 60 / 90 dias" required /></label><label className="field"><span>Dias das parcelas (separados por virgula)</span><input value={condition.installment_days} onChange={(e) => setCondition({ ...condition, installment_days: e.target.value })} placeholder="30, 60, 90" required /></label><label className="field"><span>Juros ao mes (%)</span><input type="number" min="0" step="0.01" value={condition.interest_percent_month} onChange={(e) => setCondition({ ...condition, interest_percent_month: e.target.value })} /></label><label className="field"><span>Multa (%)</span><input type="number" min="0" step="0.01" value={condition.fine_percent} onChange={(e) => setCondition({ ...condition, fine_percent: e.target.value })} /></label><button className="primary"><Save size={16} /> Salvar condicao</button><div>{(conditions.data || []).map((item) => <Row key={item.id} title={item.name} meta={`${item.installment_days.join(" / ")} dias · juros ${item.interest_percent_month}% · multa ${item.fine_percent}%`} />)}</div></form>}
     <Panel title="Fluxo de caixa">{(cashFlow.data || []).map((row) => <Row key={row.id} title={`${row.direction === "entrada" ? "+" : "-"} ${money(row.amount)} · ${row.account_name}`} meta={`${new Date(row.occurred_at).toLocaleString("pt-BR")} · ${row.description}`} />)}</Panel>
   </section>;
 }
