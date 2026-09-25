@@ -89,6 +89,13 @@ textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
 .check input { width: 18px; min-height: 18px; }
 .error { color: #b42318; }
 .sale-stack { display: grid; gap: 16px; }
+.sale-items { display: grid; border: 1px solid #dfe6dd; border-radius: 8px; padding: 0 12px; }
+.sale-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-top: 1px solid #edf1eb; }
+.sale-item:first-child { border-top: 0; }
+.sale-item > div { min-width: 0; }
+.sale-item span { display: block; color: #66756b; font-size: 13px; margin-top: 3px; }
+.sale-item button { width: 40px; min-width: 40px; height: 40px; display: grid; place-items: center; border-radius: 8px; background: #fee4e2; color: #912018; }
+.empty-hint { color: #66756b; font-size: 13px; padding: 13px 0; }
 .customer-fields { display: grid; gap: 11px; }
 .customer-fields.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .customer-fields.compact .field:nth-child(4), .customer-fields.compact .field:nth-child(5) { grid-column: 1 / -1; }

@@ -709,6 +709,7 @@ function Sales({ api, user }) {
     customer_id: "",
     product_id: "",
     quantity: 1,
+    items: [],
     payment_method: "pix",
     payment_condition_id: "",
     payment_due_date: "",
@@ -730,8 +731,26 @@ function Sales({ api, user }) {
   const customer = (customersLoad.data || []).find((c) => c.id === Number(form.customer_id));
   const priceTable = tables.find((t) => t.id === (customer?.price_table_id || tables.find((x) => x.is_default)?.id));
   const unitPrice = priceTable?.items.find((i) => i.product_id === Number(form.product_id))?.price;
-  const total = unitPrice != null ? unitPrice * form.quantity : 0;
+  const total = form.items.reduce((sum, item) => sum + Number(item.quantity) * Number(priceTable?.items.find((price) => price.product_id === item.product_id)?.price || 0), 0);
   const customerAddress = customer ? `${customer.address}${customer.reference_point ? ` - Referencia: ${customer.reference_point}` : ""}` : "";
+  function addItem() {
+    const productId = Number(form.product_id);
+    const quantity = Number(form.quantity);
+    if (!productId || !quantity || quantity <= 0) return setMessage("Selecione o produto e informe uma quantidade valida.");
+    if (unitPrice == null) return setMessage("O produto nao possui preco na tabela deste cliente.");
+    const selected = products.find((item) => item.id === productId);
+    const current = form.items.find((item) => item.product_id === productId);
+    const nextQuantity = quantity + Number(current?.quantity || 0);
+    if (!editingId && selected && nextQuantity > selected.current_stock) return setMessage(`Estoque insuficiente para ${selected.name}.`);
+    const items = current
+      ? form.items.map((item) => item.product_id === productId ? { ...item, quantity: nextQuantity } : item)
+      : [...form.items, { product_id: productId, quantity }];
+    setForm({ ...form, items, product_id: "", quantity: 1 });
+    setMessage("");
+  }
+  function removeItem(productId) {
+    setForm({ ...form, items: form.items.filter((item) => item.product_id !== productId) });
+  }
   async function save(e) {
     e.preventDefault();
     setMessage("");
@@ -742,13 +761,9 @@ function Sales({ api, user }) {
       payment_condition_id: form.payment_method === "prazo" && form.payment_condition_id ? Number(form.payment_condition_id) : null,
       payment_due_date: form.payment_method === "prazo" && form.payment_due_date ? form.payment_due_date : null,
       delivery_address: form.delivery_address,
-      items: [
-        {
-          product_id: Number(form.product_id),
-          quantity: Number(form.quantity),
-        },
-      ],
+      items: form.items.map((item) => ({ product_id: item.product_id, quantity: Number(item.quantity) })),
     };
+    if (!payload.items.length) return setMessage("Adicione pelo menos um produto a venda.");
     try {
       await api.call(editingId ? `/sales/${editingId}` : "/sales", {
         method: editingId ? "PUT" : "POST",
@@ -763,14 +778,13 @@ function Sales({ api, user }) {
     }
   }
   function startEdit(sale) {
-    if (sale.items.length !== 1) return setMessage("Esta venda possui varios produtos e nao pode ser editada por este formulario.");
-    const item = sale.items[0];
     setEditingId(sale.id);
     setForm({
       seller_id: String(sale.seller_id),
       customer_id: String(sale.customer_id || ""),
-      product_id: String(item.product_id),
-      quantity: item.quantity,
+      product_id: "",
+      quantity: 1,
+      items: sale.items.map((item) => ({ product_id: item.product_id, quantity: item.quantity })),
       payment_method: sale.payment_method,
       payment_condition_id: "",
       payment_due_date: sale.payment_due_date || "",
@@ -825,7 +839,7 @@ function Sales({ api, user }) {
         {allowed(user, "sales.change_seller") && (
           <label className="field">
             <span>Vendedor</span>
-            <select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value, customer_id: "", delivery_address: "", manual_address: false })} required>
+            <select value={form.seller_id} onChange={(e) => setForm({ ...form, seller_id: e.target.value, customer_id: "", product_id: "", items: [], delivery_address: "", manual_address: false })} required>
               <option value="">Selecione</option>
               {sellers
                 .filter((s) => s.active)
@@ -839,7 +853,7 @@ function Sales({ api, user }) {
         )}
         <label className="field">
           <span>Cliente</span>
-          <select value={form.customer_id} onChange={(e) => { const selectedCustomer = (customersLoad.data || []).find((c) => c.id === Number(e.target.value)); setForm({ ...form, customer_id: e.target.value, product_id: "", delivery_address: selectedCustomer ? `${selectedCustomer.address}${selectedCustomer.reference_point ? ` - Referencia: ${selectedCustomer.reference_point}` : ""}` : "", manual_address: false }); }} required>
+          <select value={form.customer_id} onChange={(e) => { const selectedCustomer = (customersLoad.data || []).find((c) => c.id === Number(e.target.value)); setForm({ ...form, customer_id: e.target.value, product_id: "", items: [], delivery_address: selectedCustomer ? `${selectedCustomer.address}${selectedCustomer.reference_point ? ` - Referencia: ${selectedCustomer.reference_point}` : ""}` : "", manual_address: false }); }} required>
             <option value="">Selecione o cliente</option>
             {(customersLoad.data || [])
               .filter((c) => c.active && (!allowed(user, "sales.view_all") || !form.seller_id || c.owner_seller_id === Number(form.seller_id)))
@@ -859,7 +873,7 @@ function Sales({ api, user }) {
         </label>
         <label className="field">
           <span>Produto</span>
-          <select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} required disabled={!customer}>
+          <select value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} disabled={!customer}>
             <option value="">Selecione</option>
             {products
               .filter((p) => p.active)
@@ -884,6 +898,17 @@ function Sales({ api, user }) {
           <span>Quantidade</span>
           <input type="number" min="0.01" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} required />
         </label>
+        <button type="button" onClick={addItem} disabled={!form.product_id}>
+          <PackagePlus size={16} /> Adicionar produto
+        </button>
+        <div className="sale-items">
+          {form.items.map((item) => {
+            const itemProduct = products.find((productRow) => productRow.id === item.product_id);
+            const itemPrice = priceTable?.items.find((price) => price.product_id === item.product_id)?.price || 0;
+            return <div className="sale-item" key={item.product_id}><div><strong>{itemProduct?.name || `Produto #${item.product_id}`}</strong><span>{item.quantity} x {money(itemPrice)} = {money(item.quantity * itemPrice)}</span></div><button type="button" className="danger" title="Remover produto" onClick={() => removeItem(item.product_id)}><Trash2 size={16} /></button></div>;
+          })}
+          {!form.items.length && <p className="empty-hint">Nenhum produto adicionado.</p>}
+        </div>
         <div className="total">
           <small>Total da venda</small>
           <strong>{money(total)}</strong>
