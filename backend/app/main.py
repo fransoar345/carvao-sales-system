@@ -91,6 +91,7 @@ def sale_to_schema(sale: models.Sale) -> schemas.SaleOut:
         occurred_at=sale.occurred_at,
         total_value=sale.total_value,
         payment_method=sale.payment_method,
+        payment_due_date=sale.payment_term.due_date if sale.payment_term else None,
         status=sale.status,
         items=[
             schemas.SaleItemOut(
@@ -112,6 +113,7 @@ def sale_load_options():
         joinedload(models.Sale.items).joinedload(models.SaleItem.product),
         joinedload(models.Sale.customer_link).joinedload(models.SaleCustomerLink.customer),
         joinedload(models.Sale.customer_link).joinedload(models.SaleCustomerLink.price_table),
+        joinedload(models.Sale.payment_term),
     )
 
 
@@ -534,6 +536,8 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
     db.add(sale)
     db.flush()
     sale.customer_link = models.SaleCustomerLink(customer_id=customer.id, price_table_id=price_table.id)
+    if payload.payment_method == "prazo":
+        sale.payment_term = models.SalePaymentTerm(due_date=payload.payment_due_date)
     audit(db, user, "create", "sale", sale.id, f"Venda R$ {sale.total_value:.2f}")
     db.commit()
     sale = db.query(models.Sale).options(*sale_load_options()).get(sale.id)
@@ -587,6 +591,14 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     sale.customer_name = customer.legal_name
     sale.customer_phone = customer.phone
     sale.payment_method = payload.payment_method
+    if payload.payment_method == "prazo":
+        if sale.payment_term:
+            sale.payment_term.due_date = payload.payment_due_date
+        else:
+            sale.payment_term = models.SalePaymentTerm(due_date=payload.payment_due_date)
+    elif sale.payment_term:
+        db.delete(sale.payment_term)
+        sale.payment_term = None
     sale.total_value = total
     if sale.customer_link:
         sale.customer_link.customer_id = customer.id

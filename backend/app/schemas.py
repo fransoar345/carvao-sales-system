@@ -188,8 +188,15 @@ class SaleCreate(BaseModel):
     customer_name: str | None = None
     customer_phone: str | None = None
     payment_method: str
+    payment_due_date: date | None = None
     total_value: float | None = None
     items: list[SaleItemCreate]
+
+    @model_validator(mode="after")
+    def require_due_date_for_credit(self):
+        if self.payment_method == "prazo" and not self.payment_due_date:
+            raise ValueError("Informe a data de vencimento para venda a prazo")
+        return self
 
 
 class SaleUpdate(BaseModel):
@@ -198,8 +205,15 @@ class SaleUpdate(BaseModel):
     customer_name: str | None = None
     customer_phone: str | None = None
     payment_method: str
+    payment_due_date: date | None = None
     total_value: float | None = None
     items: list[SaleItemCreate] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_due_date_for_credit(self):
+        if self.payment_method == "prazo" and not self.payment_due_date:
+            raise ValueError("Informe a data de vencimento para venda a prazo")
+        return self
 
 
 class SaleItemOut(BaseModel):
@@ -223,6 +237,7 @@ class SaleOut(BaseModel):
     occurred_at: datetime
     total_value: float
     payment_method: str
+    payment_due_date: date | None = None
     status: str
     items: list[SaleItemOut]
 

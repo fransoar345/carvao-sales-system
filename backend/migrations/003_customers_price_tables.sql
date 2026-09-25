@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS sale_customer_links (
     sale_id INTEGER PRIMARY KEY REFERENCES sales(id), customer_id INTEGER NOT NULL REFERENCES customers(id),
     price_table_id INTEGER NOT NULL REFERENCES price_tables(id)
 );
+CREATE TABLE IF NOT EXISTS sale_payment_terms (
+    sale_id INTEGER PRIMARY KEY REFERENCES sales(id), due_date DATE NOT NULL
+);
 CREATE INDEX IF NOT EXISTS ix_price_table_items_table ON price_table_items(price_table_id);
 CREATE INDEX IF NOT EXISTS ix_customers_cnpj ON customers(cnpj);
 CREATE INDEX IF NOT EXISTS ix_sale_customer_links_customer ON sale_customer_links(customer_id);

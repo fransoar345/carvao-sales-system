@@ -117,6 +117,7 @@ class Sale(Base, TimestampMixin):
     seller = relationship("Seller")
     items = relationship("SaleItem", cascade="all, delete-orphan", back_populates="sale")
     customer_link = relationship("SaleCustomerLink", cascade="all, delete-orphan", back_populates="sale", uselist=False)
+    payment_term = relationship("SalePaymentTerm", cascade="all, delete-orphan", back_populates="sale", uselist=False)
 
 
 class SaleItem(Base):
@@ -139,6 +140,13 @@ class SaleCustomerLink(Base):
     sale = relationship("Sale", back_populates="customer_link")
     customer = relationship("Customer")
     price_table = relationship("PriceTable")
+
+
+class SalePaymentTerm(Base):
+    __tablename__ = "sale_payment_terms"
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), primary_key=True)
+    due_date: Mapped[date] = mapped_column(Date)
+    sale = relationship("Sale", back_populates="payment_term")
 
 
 class DeliveryManifest(Base, TimestampMixin):

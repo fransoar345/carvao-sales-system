@@ -71,9 +71,16 @@ async def notify_sale(db: Session, sale: models.Sale) -> None:
     if not settings.sale_notifications:
         return
     item_text = ", ".join(f"{i.quantity:g}x {i.product.name}" for i in sale.items)
+    customer = sale.customer_link.customer if sale.customer_link else None
+    payment_names = {"dinheiro": "Dinheiro", "pix": "Pix", "cartao": "Cartao", "prazo": "A prazo"}
+    payment_text = payment_names.get(sale.payment_method, sale.payment_method)
+    due_text = f". Vencimento: {sale.payment_term.due_date:%d/%m/%Y}" if sale.payment_term else ""
+    company_text = customer.legal_name if customer else (sale.customer_name or "Nao informado")
+    address_text = customer.address if customer else "Nao informado"
     manager_message = (
         f"Venda confirmada: {sale.seller.name} vendeu {item_text}. "
-        f"Total R$ {sale.total_value:.2f} via {sale.payment_method}."
+        f"Total R$ {sale.total_value:.2f}. Meio de pagamento: {payment_text}{due_text}. "
+        f"Empresa: {company_text}. Endereco: {address_text}."
     )
     seller_message = f"Venda registrada com sucesso. Total R$ {sale.total_value:.2f}."
     await send_notification_safely(db, settings.manager_phone, manager_message)
