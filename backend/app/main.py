@@ -323,7 +323,7 @@ def refresh_sale_commission(db: Session, sale: models.Sale) -> models.SellerComm
         return commission
     seller = db.get(models.Seller, sale.seller_id)
     commission.seller_id = sale.seller_id
-    commission.commission_percent = seller.commission_percent or 0 if seller else 0
+    commission.commission_percent = (seller.commission_percent or 0) if seller else 0
     commission.amount = round(sale.total_value * (commission.commission_percent / 100), 2)
     commission.status = "pendente" if sale.status == "confirmada" else "cancelada"
     return commission
