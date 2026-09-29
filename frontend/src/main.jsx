@@ -129,13 +129,18 @@ function App() {
 }
 
 function Login({ onLogin }) {
-  const [email, setEmail] = useState("admin@carvao.local");
-  const [password, setPassword] = useState("admin123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   async function submit(e) {
     e.preventDefault();
     setError("");
-    const body = new URLSearchParams({ username: email, password });
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail || !password.trim()) {
+      setError("Informe o e-mail e a senha.");
+      return;
+    }
+    const body = new URLSearchParams({ username: normalizedEmail, password });
     const res = await fetch(`${API}/auth/login`, { method: "POST", body });
     if (!res.ok) return setError("Credenciais invalidas");
     onLogin(await res.json());
@@ -147,15 +152,14 @@ function Login({ onLogin }) {
         <h1>Carvao Pro</h1>
         <label>
           E-mail
-          <input value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
         </label>
         <label>
           Senha
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
         </label>
         {error && <p className="error">{error}</p>}
         <button className="primary">Entrar</button>
-        <p className="hint">admin@carvao.local / admin123</p>
       </form>
     </section>
   );
@@ -580,7 +584,19 @@ function Customers({ api, user }) {
       setMessage(error.message);
     }
   }
-  const list = (customersLoad.data || []).map((c) => <Row key={c.id} title={c.legal_name} meta={`CNPJ ${c.cnpj} · Vendedor: ${c.owner_seller_name || "nao definido"} · ${c.price_table_name || "Tabela padrao"} · ${c.phone || c.email}`} onEdit={allowed(user, "customers.edit") ? () => setForm({ ...c, price_table_id: c.price_table_id || "", owner_seller_id: c.owner_seller_id || "" }) : null} />);
+  async function remove(customer) {
+    if (!window.confirm(`Excluir o cliente ${customer.legal_name}? O historico de vendas sera mantido.`)) return;
+    setMessage("");
+    try {
+      await api.call(`/customers/${customer.id}`, { method: "DELETE" });
+      if (form.id === customer.id) setForm(emptyCustomer);
+      customersLoad.reload();
+      setMessage("Cliente excluido com sucesso.");
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }
+  const list = (customersLoad.data || []).map((c) => <Row key={c.id} title={c.legal_name} meta={`CNPJ ${c.cnpj} · Vendedor: ${c.owner_seller_name || "nao definido"} · ${c.price_table_name || "Tabela padrao"} · ${c.phone || c.email}`} onEdit={allowed(user, "customers.edit") ? () => setForm({ ...c, price_table_id: c.price_table_id || "", owner_seller_id: c.owner_seller_id || "" }) : null} actions={allowed(user, "customers.deactivate") ? <button className="danger" onClick={() => remove(c)}><Trash2 size={16} /> Excluir</button> : null} />);
   return (
     <CrudLayout
       form={

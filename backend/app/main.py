@@ -321,7 +321,10 @@ def health():
 
 @app.post("/api/auth/login", response_model=schemas.Token)
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(models.User).options(joinedload(models.User.access_roles).joinedload(models.AccessRole.permissions), joinedload(models.User.permission_overrides).joinedload(models.UserPermissionOverride.permission)).filter(models.User.email == form.username).first()
+    username = form.username.strip().lower()
+    if not username or not form.password.strip():
+        raise HTTPException(400, "Informe o e-mail e a senha")
+    user = db.query(models.User).options(joinedload(models.User.access_roles).joinedload(models.AccessRole.permissions), joinedload(models.User.permission_overrides).joinedload(models.UserPermissionOverride.permission)).filter(models.User.email == username).first()
     if not user or not verify_password(form.password, user.password_hash):
         raise HTTPException(401, "Login ou senha invalidos")
     token = create_access_token(user)
@@ -512,7 +515,7 @@ def update_price_table(table_id: int, payload: schemas.PriceTableUpdate, db: Ses
 def list_customers(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     if not has_permission(user, "customers.view_all") and not has_permission(user, "customers.view_own"):
         raise HTTPException(403, "Permissao insuficiente")
-    query = db.query(models.Customer).options(joinedload(models.Customer.price_table), joinedload(models.Customer.ownership).joinedload(models.CustomerOwnership.seller))
+    query = db.query(models.Customer).options(joinedload(models.Customer.price_table), joinedload(models.Customer.ownership).joinedload(models.CustomerOwnership.seller)).filter(models.Customer.active.is_(True))
     if not has_permission(user, "customers.view_all"):
         query = query.join(models.CustomerOwnership).filter(models.CustomerOwnership.seller_id == user.seller_id)
     rows = query.order_by(models.Customer.legal_name).all()
@@ -548,6 +551,17 @@ def update_customer(customer_id: int, payload: schemas.CustomerUpdate, db: Sessi
     else: row.ownership = models.CustomerOwnership(seller_id=payload.owner_seller_id)
     audit(db, user, "update", "customer", row.id, row.legal_name); db.commit(); db.refresh(row)
     return customer_to_schema(row)
+
+
+@app.delete("/api/customers/{customer_id}")
+def delete_customer(customer_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("customers.deactivate"))):
+    row = db.get(models.Customer, customer_id)
+    if not row or not row.active:
+        raise HTTPException(404, "Cliente nao encontrado")
+    row.active = False
+    audit(db, user, "deactivate", "customer", row.id, row.legal_name)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/stock/movements", response_model=list[schemas.MovementOut])
