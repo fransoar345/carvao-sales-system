@@ -881,7 +881,25 @@ def delete_sale(sale_id: int, db: Session = Depends(get_db), user: models.User =
         raise HTTPException(404, "Venda nao encontrada")
     if sale.status != "confirmada":
         raise HTTPException(400, "Venda ja cancelada")
-    ensure_sale_not_in_active_manifest(db, sale.id)
+    manifest_items = (
+        db.query(models.DeliveryManifestItem)
+        .options(joinedload(models.DeliveryManifestItem.manifest))
+        .join(models.DeliveryManifest)
+        .filter(models.DeliveryManifestItem.sale_id == sale.id, models.DeliveryManifest.status != "cancelado")
+        .all()
+    )
+    blocked_manifest = next((item.manifest for item in manifest_items if item.manifest.status != "preparacao"), None)
+    if blocked_manifest:
+        raise HTTPException(400, f"A venda esta no romaneio {blocked_manifest.code}, que ja saiu da preparacao")
+    affected_manifests = {item.manifest_id: item.manifest for item in manifest_items}
+    for manifest_item in manifest_items:
+        db.delete(manifest_item)
+    if manifest_items:
+        db.flush()
+        for manifest_id, manifest in affected_manifests.items():
+            remaining = db.query(models.DeliveryManifestItem).filter(models.DeliveryManifestItem.manifest_id == manifest_id).count()
+            if not remaining:
+                manifest.status = "cancelado"
     for item in sale.items:
         item.product.current_stock += item.quantity
         db.add(models.StockMovement(product_id=item.product_id, movement_type="devolucao", quantity=item.quantity, responsible_id=user.id, note=f"Cancelamento da venda #{sale.id}"))

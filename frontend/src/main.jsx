@@ -851,6 +851,7 @@ function Sales({ api, user }) {
     <div className="sale-stack">
       <form className="panel form sale-form" onSubmit={save}>
         <h2>{editingId ? `Alterar venda #${editingId}` : "Lancar Venda"}</h2>
+        {message && <p className="form-status">{message}</p>}
         {editingId && <p className="edit-banner">Ao salvar, o estoque anterior sera devolvido e a nova quantidade sera baixada.</p>}
         {allowed(user, "sales.change_seller") && (
           <label className="field">
@@ -961,7 +962,6 @@ function Sales({ api, user }) {
             Cancelar edicao
           </button>
         )}
-        {message && <p className="form-status">{message}</p>}
       </form>
       {showCustomer && (
         <form className="panel form inline-customer" onSubmit={createCustomer}>
