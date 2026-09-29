@@ -820,7 +820,7 @@ function Sales({ api, user }) {
     try {
       await api.call(`/sales/${sale.id}`, { method: "DELETE" });
       if (editingId === sale.id) cancelEdit();
-      setMessage("Venda cancelada e produtos devolvidos ao estoque.");
+      setMessage("Venda excluida e produtos devolvidos ao estoque.");
       reload();
     } catch (error) {
       setMessage(error.message);

@@ -702,6 +702,7 @@ def list_sales(
     start: date | None = None,
     end: date | None = None,
     seller_id: int | None = None,
+    include_cancelled: bool = False,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -712,6 +713,8 @@ def list_sales(
         query = query.filter(models.Sale.seller_id == user.seller_id)
     elif seller_id:
         query = query.filter(models.Sale.seller_id == seller_id)
+    if not include_cancelled:
+        query = query.filter(models.Sale.status != "cancelada")
     if start:
         query = query.filter(models.Sale.occurred_at >= datetime.combine(start, time.min))
     if end:
