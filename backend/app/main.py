@@ -314,6 +314,21 @@ def rebuild_payable_payment_status(payable: models.Payable):
     payable.status = "pago" if total_paid >= payable.original_amount else ("parcial" if total_paid else "aberto")
 
 
+def refresh_sale_commission(db: Session, sale: models.Sale) -> models.SellerCommission:
+    commission = db.query(models.SellerCommission).filter(models.SellerCommission.sale_id == sale.id).first()
+    if not commission:
+        commission = models.SellerCommission(sale_id=sale.id, seller_id=sale.seller_id)
+        db.add(commission)
+    if commission.status == "paga":
+        return commission
+    seller = db.get(models.Seller, sale.seller_id)
+    commission.seller_id = sale.seller_id
+    commission.commission_percent = seller.commission_percent or 0 if seller else 0
+    commission.amount = round(sale.total_value * (commission.commission_percent / 100), 2)
+    commission.status = "pendente" if sale.status == "confirmada" else "cancelada"
+    return commission
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "app": settings.app_name}
@@ -765,6 +780,7 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
         sale.payment_term = models.SalePaymentTerm(due_date=financial_due_date)
     sale.delivery_detail = models.SaleDeliveryDetail(delivery_address=payload.delivery_address.strip())
     create_receivable(db, sale, customer.id, financial_due_date, user, payload.payment_condition_id)
+    refresh_sale_commission(db, sale)
     audit(db, user, "create", "sale", sale.id, f"Venda R$ {sale.total_value:.2f}")
     db.commit()
     sale = db.query(models.Sale).options(*sale_load_options()).get(sale.id)
@@ -868,6 +884,7 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
             receivable.status = "pago"
             db.query(models.CashTransaction).filter(models.CashTransaction.source_type == "receivable_payment", models.CashTransaction.source_id == active_payments[0].id).update({models.CashTransaction.amount: total})
         rebuild_receivable_payment_status(receivable)
+    refresh_sale_commission(db, sale)
     audit(db, user, "update", "sale", sale.id, f"Venda alterada para R$ {sale.total_value:.2f}")
     db.commit()
     updated = db.query(models.Sale).options(*sale_load_options()).filter(models.Sale.id == sale.id).first()
@@ -904,6 +921,7 @@ def delete_sale(sale_id: int, db: Session = Depends(get_db), user: models.User =
         item.product.current_stock += item.quantity
         db.add(models.StockMovement(product_id=item.product_id, movement_type="devolucao", quantity=item.quantity, responsible_id=user.id, note=f"Cancelamento da venda #{sale.id}"))
     sale.status = "cancelada"
+    refresh_sale_commission(db, sale)
     receivable = db.query(models.Receivable).options(joinedload(models.Receivable.payments)).filter(models.Receivable.sale_id == sale.id).first()
     if receivable:
         receivable.status = "cancelado"
@@ -1246,6 +1264,71 @@ def finance_dashboard(db: Session = Depends(get_db), user: models.User = Depends
         "received_today": float(received_today), "paid_today": float(paid_today),
         "overdue_customers": len({row.customer_id for row in receivables if row.due_date < today and row.paid_amount < row.original_amount}),
     }
+
+
+@app.get("/api/finance/commissions")
+def list_commissions(db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.view_payables"))):
+    missing = (
+        db.query(models.Sale)
+        .outerjoin(models.SellerCommission, models.SellerCommission.sale_id == models.Sale.id)
+        .filter(models.Sale.status == "confirmada", models.SellerCommission.id.is_(None))
+        .all()
+    )
+    if missing:
+        for sale in missing:
+            refresh_sale_commission(db, sale)
+        db.commit()
+    rows = (
+        db.query(models.SellerCommission)
+        .options(joinedload(models.SellerCommission.seller), joinedload(models.SellerCommission.sale), joinedload(models.SellerCommission.paid_by))
+        .filter(models.SellerCommission.status != "cancelada")
+        .order_by(models.SellerCommission.status, models.SellerCommission.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "sale_id": row.sale_id,
+            "seller_id": row.seller_id,
+            "seller_name": row.seller.name,
+            "customer_name": row.sale.customer_name,
+            "sale_date": row.sale.occurred_at,
+            "commission_percent": row.commission_percent,
+            "amount": row.amount,
+            "status": row.status,
+            "paid_at": row.paid_at,
+            "paid_by_name": row.paid_by.name if row.paid_by else None,
+        }
+        for row in rows
+    ]
+
+
+@app.post("/api/finance/commissions/{commission_id}/pay")
+def pay_commission(commission_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.settle_titles"))):
+    row = db.get(models.SellerCommission, commission_id)
+    if not row or row.status == "cancelada":
+        raise HTTPException(404, "Comissao nao encontrada")
+    if row.status == "paga":
+        raise HTTPException(400, "Comissao ja foi paga")
+    row.status = "paga"
+    row.paid_at = datetime.utcnow()
+    row.paid_by_id = user.id
+    audit(db, user, "pay", "seller_commission", row.id, f"Venda #{row.sale_id}; R$ {row.amount:.2f}")
+    db.commit()
+    return {"ok": True, "status": row.status, "paid_at": row.paid_at}
+
+
+@app.post("/api/finance/commissions/{commission_id}/unpay")
+def unpay_commission(commission_id: int, db: Session = Depends(get_db), user: models.User = Depends(require_permission("finance.reverse_payments"))):
+    row = db.get(models.SellerCommission, commission_id)
+    if not row or row.status != "paga":
+        raise HTTPException(404, "Comissao paga nao encontrada")
+    row.status = "pendente"
+    row.paid_at = None
+    row.paid_by_id = None
+    audit(db, user, "reverse_payment", "seller_commission", row.id, f"Venda #{row.sale_id}; R$ {row.amount:.2f}")
+    db.commit()
+    return {"ok": True, "status": row.status}
 
 
 @app.get("/api/finance/accounts")

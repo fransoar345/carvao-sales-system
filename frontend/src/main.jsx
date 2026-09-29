@@ -1280,6 +1280,7 @@ function Finance({ api, user }) {
   const dashboard = useLoad(api, () => api.call("/finance/dashboard"), []);
   const receivables = useLoad(api, () => api.call("/finance/receivables"), []);
   const payables = useLoad(api, () => api.call("/finance/payables"), []);
+  const commissions = useLoad(api, () => api.call("/finance/commissions"), []);
   const accounts = useLoad(api, () => api.call("/finance/accounts"), []);
   const suppliers = useLoad(api, () => api.call("/finance/suppliers"), []);
   const centers = useLoad(api, () => api.call("/finance/cost-centers"), []);
@@ -1289,7 +1290,7 @@ function Finance({ api, user }) {
   const [payable, setPayable] = useState({ supplier_id: "", cost_center_id: "", category: "despesa", description: "", competence_date: today, due_date: today, original_amount: 0, notes: "" });
   const [supplier, setSupplier] = useState({ name: "", document: "", phone: "", email: "" });
   const [condition, setCondition] = useState({ name: "", installment_days: "30", interest_percent_month: 0, fine_percent: 0 });
-  const refresh = () => { dashboard.reload(); receivables.reload(); payables.reload(); accounts.reload(); cashFlow.reload(); };
+  const refresh = () => { dashboard.reload(); receivables.reload(); payables.reload(); commissions.reload(); accounts.reload(); cashFlow.reload(); };
   async function addPayable(e) {
     e.preventDefault(); setMessage("");
     try { await api.call("/finance/payables", { method: "POST", body: JSON.stringify({ ...payable, supplier_id: payable.supplier_id ? Number(payable.supplier_id) : null, cost_center_id: Number(payable.cost_center_id), original_amount: Number(payable.original_amount) }) }); setPayable({ supplier_id: "", cost_center_id: "", category: "despesa", description: "", competence_date: today, due_date: today, original_amount: 0, notes: "" }); setMessage("Conta a pagar cadastrada."); refresh(); } catch (error) { setMessage(error.message); }
@@ -1341,6 +1342,14 @@ function Finance({ api, user }) {
       await api.call(`/finance/customers/${row.customer_id}/credit`, { method: "PUT", body: JSON.stringify({ credit_limit: Number(limit.replace(",", ".")), max_term_days: Number(term), block_overdue: current.block_overdue, tolerance_days: current.tolerance_days }) }); setMessage("Regra de credito atualizada.");
     } catch (error) { setMessage(error.message); }
   }
+  async function payCommission(row) {
+    if (!window.confirm(`Marcar como paga a comissao de ${money(row.amount)} para ${row.seller_name}?`)) return;
+    try { await api.call(`/finance/commissions/${row.id}/pay`, { method: "POST" }); setMessage("Comissao marcada como paga."); commissions.reload(); } catch (error) { setMessage(error.message); }
+  }
+  async function unpayCommission(row) {
+    if (!window.confirm(`Estornar o pagamento da comissao de ${money(row.amount)}?`)) return;
+    try { await api.call(`/finance/commissions/${row.id}/unpay`, { method: "POST" }); setMessage("Comissao voltou para pendente."); commissions.reload(); } catch (error) { setMessage(error.message); }
+  }
   if (!dashboard.data) return <Loading />;
   return <section className="finance-page">
     <div className="grid finance-metrics">
@@ -1356,6 +1365,10 @@ function Finance({ api, user }) {
       <Panel title="Contas a receber">{(receivables.data || []).map((row) => <Row key={row.id} title={`${row.customer_name} · ${money(row.balance)}`} meta={`Venda #${row.sale_id} · ${row.installments.length} parcela(s): ${row.installments.map((item) => `${item.number}/${new Date(`${item.due_date}T12:00:00`).toLocaleDateString("pt-BR")} ${item.status}`).join("; ")} · ${row.status} · ${row.seller_name}`} actions={<>{row.balance > 0 && row.status !== "cancelado" && <button onClick={() => settle("receivables", row)}>Receber</button>}{allowed(user, "finance.edit_receivables") && <button onClick={() => adjust(row)}>Ajustar</button>}{allowed(user, "finance.edit_receivables") && <button onClick={() => collect(row)}>Cobranca</button>}{allowed(user, "customers.change_credit_limit") && <button onClick={() => configureCredit(row)}>Credito</button>}{allowed(user, "finance.reverse_payments") && row.paid_amount > 0 && <button onClick={() => reverseLast("receivables", row)}>Estornar</button>}</>} />)}</Panel>
       <Panel title="Contas a pagar">{(payables.data || []).map((row) => <Row key={row.id} title={`${row.description} · ${money(row.balance)}`} meta={`${row.supplier_name || "Sem fornecedor"} · ${row.cost_center_name} · ${new Date(`${row.due_date}T12:00:00`).toLocaleDateString("pt-BR")} · ${row.status}`} actions={<>{row.balance > 0 && row.status !== "cancelado" && <button onClick={() => settle("payables", row)}>Pagar</button>}{allowed(user, "finance.reverse_payments") && row.paid_amount > 0 && <button onClick={() => reverseLast("payables", row)}>Estornar</button>}</>} />)}</Panel>
     </div>
+    <Panel title="Comissoes dos vendedores">
+      {(commissions.data || []).map((row) => <Row key={row.id} title={`${row.seller_name} · ${money(row.amount)}`} meta={`Venda #${row.sale_id} · ${row.customer_name} · ${row.commission_percent}% · ${row.status === "paga" ? `Paga em ${new Date(row.paid_at).toLocaleDateString("pt-BR")}${row.paid_by_name ? ` por ${row.paid_by_name}` : ""}` : "Pendente"}`} actions={<>{row.status === "pendente" && allowed(user, "finance.settle_titles") && <button className="primary" onClick={() => payCommission(row)}>Marcar paga</button>}{row.status === "paga" && allowed(user, "finance.reverse_payments") && <button onClick={() => unpayCommission(row)}>Estornar</button>}</>} />)}
+      {!(commissions.data || []).length && <p className="empty-hint">Nenhuma comissao pendente ou paga.</p>}
+    </Panel>
     <div className="finance-columns">
       <form className="panel form" onSubmit={addPayable}><h2>Nova conta a pagar</h2><label className="field"><span>Descricao</span><input value={payable.description} onChange={(e) => setPayable({ ...payable, description: e.target.value })} required /></label><label className="field"><span>Fornecedor</span><select value={payable.supplier_id} onChange={(e) => setPayable({ ...payable, supplier_id: e.target.value })}><option value="">Sem fornecedor</option>{(suppliers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Centro de custo</span><select value={payable.cost_center_id} onChange={(e) => setPayable({ ...payable, cost_center_id: e.target.value })} required><option value="">Selecione</option>{(centers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Categoria</span><input value={payable.category} onChange={(e) => setPayable({ ...payable, category: e.target.value })} required /></label><label className="field"><span>Competencia</span><input type="date" value={payable.competence_date} onChange={(e) => setPayable({ ...payable, competence_date: e.target.value })} required /></label><label className="field"><span>Vencimento</span><input type="date" value={payable.due_date} onChange={(e) => setPayable({ ...payable, due_date: e.target.value })} required /></label><label className="field"><span>Valor</span><input type="number" min="0.01" step="0.01" value={payable.original_amount} onChange={(e) => setPayable({ ...payable, original_amount: e.target.value })} required /></label><button className="primary"><Save size={16} /> Salvar despesa</button></form>
       <form className="panel form" onSubmit={addSupplier}><h2>Novo fornecedor</h2><label className="field"><span>Nome / Razao social</span><input value={supplier.name} onChange={(e) => setSupplier({ ...supplier, name: e.target.value })} required /></label><label className="field"><span>CNPJ ou CPF</span><input value={supplier.document} onChange={(e) => setSupplier({ ...supplier, document: e.target.value })} /></label><label className="field"><span>Telefone</span><input value={supplier.phone} onChange={(e) => setSupplier({ ...supplier, phone: e.target.value })} /></label><label className="field"><span>E-mail</span><input type="email" value={supplier.email} onChange={(e) => setSupplier({ ...supplier, email: e.target.value })} /></label><button className="primary"><Save size={16} /> Salvar fornecedor</button><h2 className="finance-subtitle">Contas e saldos</h2>{(accounts.data || []).map((row) => <Row key={row.id} title={row.name} meta={`${row.account_type} · ${money(row.balance)}`} />)}</form>

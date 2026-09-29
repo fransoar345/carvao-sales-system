@@ -356,6 +356,22 @@ class PayablePayment(Base, TimestampMixin):
     account = relationship("FinancialAccount")
 
 
+class SellerCommission(Base, TimestampMixin):
+    __tablename__ = "seller_commissions"
+    __table_args__ = (UniqueConstraint("sale_id", name="uq_commission_sale"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), index=True)
+    seller_id: Mapped[int] = mapped_column(ForeignKey("sellers.id"), index=True)
+    commission_percent: Mapped[float] = mapped_column(Float, default=0)
+    amount: Mapped[float] = mapped_column(Float, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="pendente", index=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    paid_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    sale = relationship("Sale")
+    seller = relationship("Seller")
+    paid_by = relationship("User")
+
+
 class CashTransaction(Base, TimestampMixin):
     __tablename__ = "cash_transactions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
