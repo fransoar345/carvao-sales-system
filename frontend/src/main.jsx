@@ -554,10 +554,10 @@ const emptyCustomer = {
 function CustomerFields({ form, setForm, tables, sellers = [], showOwner = false, showPriceTable = true, compact = false }) {
   return (
     <div className={compact ? "customer-fields compact" : "customer-fields"}>
-      {showPriceTable && <label className="field">
+      <label className="field">
         <span>CNPJ</span>
         <input value={form.cnpj} onChange={(e) => setForm({ ...form, cnpj: e.target.value })} placeholder="00.000.000/0000-00" required />
-      </label>}
+      </label>
       <label className="field">
         <span>Razao Social</span>
         <input value={form.legal_name} onChange={(e) => setForm({ ...form, legal_name: e.target.value })} required />
@@ -582,7 +582,7 @@ function CustomerFields({ form, setForm, tables, sellers = [], showOwner = false
         <span>E-mail</span>
         <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
       </label>
-      <label className="field">
+      {showPriceTable && <label className="field">
         <span>Tabela de precos</span>
         <select value={form.price_table_id || ""} onChange={(e) => setForm({ ...form, price_table_id: e.target.value })}>
           <option value="">Tabela padrao</option>
@@ -594,7 +594,7 @@ function CustomerFields({ form, setForm, tables, sellers = [], showOwner = false
               </option>
             ))}
         </select>
-      </label>
+      </label>}
       {showOwner && (
         <label className="field">
           <span>Vendedor responsavel</span>
