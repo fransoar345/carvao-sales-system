@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Building2, Ban, Boxes, CheckCircle2, ClipboardList, Trash2, Download, LogOut, MessageCircle, MapPin, PackagePlus, Play, Printer, ReceiptText, Save, ShieldCheck, ShoppingCart, Truck, Tags, UserPlus, Users, WalletCards } from "lucide-react";
+import { BarChart3, Building2, Ban, Boxes, CheckCircle2, ClipboardList, Trash2, Download, LogOut, MessageCircle, MapPin, PackagePlus, Pencil, Play, Printer, ReceiptText, Save, ShieldCheck, ShoppingCart, Truck, Tags, UserPlus, Users, WalletCards } from "lucide-react";
 import "./styles.css";
 
 const API = import.meta.env.VITE_API_URL || "https://carvao-sales-system-production.up.railway.app/api";
@@ -423,12 +423,53 @@ function Sellers({ api, user }) {
     temporary_password: "vendedor123",
   };
   const [form, setForm] = useState(empty);
+  const [editingId, setEditingId] = useState(null);
+  const [message, setMessage] = useState("");
   const { data: sellers, reload } = useLoad(api, () => api.call("/sellers"), []);
   async function save(e) {
     e.preventDefault();
-    await api.call("/sellers", { method: "POST", body: JSON.stringify(form) });
+    setMessage("");
+    try {
+      if (editingId) {
+        const payload = {
+          name: form.name,
+          phone: form.phone,
+          email: form.email,
+          monthly_goal: form.monthly_goal,
+          commission_percent: form.commission_percent,
+          active: form.active,
+          ...(form.new_password ? { new_password: form.new_password } : {}),
+        };
+        await api.call(`/sellers/${editingId}`, { method: "PUT", body: JSON.stringify(payload) });
+        setMessage("Vendedor atualizado com sucesso.");
+      } else {
+        await api.call("/sellers", { method: "POST", body: JSON.stringify(form) });
+        setMessage("Vendedor cadastrado com sucesso.");
+      }
+      setForm(empty);
+      setEditingId(null);
+      reload();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }
+  function editSeller(seller) {
+    setEditingId(seller.id);
+    setMessage("");
+    setForm({
+      name: seller.name,
+      phone: seller.phone,
+      monthly_goal: seller.monthly_goal || 0,
+      commission_percent: seller.commission_percent || 0,
+      email: seller.email || "",
+      new_password: "",
+      active: seller.active,
+    });
+  }
+  function cancelEdit() {
+    setEditingId(null);
     setForm(empty);
-    reload();
+    setMessage("");
   }
   async function removeSeller(seller) {
     if (!window.confirm(`Excluir vendedor ${seller.name}? O historico de vendas sera mantido.`)) return;
@@ -440,9 +481,10 @@ function Sellers({ api, user }) {
   }
   return (
     <CrudLayout
-      form={allowed(user, "users.create") ?
+      form={(allowed(user, "users.create") || allowed(user, "users.edit")) ?
         <form className="panel form" onSubmit={save}>
-          <h2>Cadastro de Vendedor</h2>
+          <h2>{editingId ? "Editar Vendedor" : "Cadastro de Vendedor"}</h2>
+          {message && <p className="edit-banner">{message}</p>}
           <label className="field">
             <span>Nome do vendedor</span>
             <input placeholder="Ex.: Maria Silva" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
@@ -455,10 +497,14 @@ function Sellers({ api, user }) {
             <span>E-mail de acesso</span>
             <input type="email" placeholder="Ex.: maria@empresa.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
           </label>
-          <label className="field">
+          {!editingId && <label className="field">
             <span>Senha inicial</span>
             <input type="text" placeholder="Minimo de 6 caracteres" value={form.temporary_password} onChange={(e) => setForm({ ...form, temporary_password: e.target.value })} minLength={6} required />
-          </label>
+          </label>}
+          {editingId && allowed(user, "users.change_password") && <label className="field">
+            <span>Nova senha (opcional)</span>
+            <input type="password" placeholder="Deixe vazio para manter a senha atual" value={form.new_password || ""} onChange={(e) => setForm({ ...form, new_password: e.target.value })} minLength={6} />
+          </label>}
           <label className="field">
             <span>Meta mensal de vendas (R$)</span>
             <input type="number" min="0" step="0.01" value={form.monthly_goal} onChange={(e) => setForm({ ...form, monthly_goal: Number(e.target.value) })} />
@@ -468,8 +514,9 @@ function Sellers({ api, user }) {
             <input type="number" min="0" max="100" step="0.01" value={form.commission_percent} onChange={(e) => setForm({ ...form, commission_percent: Number(e.target.value) })} />
           </label>
           <button className="primary">
-            <Save size={16} /> Salvar Vendedor
+            <Save size={16} /> {editingId ? "Salvar alteracoes" : "Salvar Vendedor"}
           </button>
+          {editingId && <button type="button" onClick={cancelEdit}>Cancelar edicao</button>}
         </form>
       : null}
       list={(sellers || []).map((s) => (
@@ -477,11 +524,14 @@ function Sellers({ api, user }) {
           key={s.id}
           title={s.name}
           meta={`${s.phone} · ${s.email} · ${s.active ? "ativo" : "inativo"}`}
-          actions={allowed(user, "users.deactivate") ?
-            <button className="danger" onClick={() => removeSeller(s)}>
+          actions={<>
+            {allowed(user, "users.edit") && <button onClick={() => editSeller(s)}>
+              <Pencil size={16} /> Editar
+            </button>}
+            {allowed(user, "users.deactivate") && s.active && <button className="danger" onClick={() => removeSeller(s)}>
               <Trash2 size={16} /> Excluir
-            </button>
-          : null}
+            </button>}
+          </>}
         />
       ))}
     />

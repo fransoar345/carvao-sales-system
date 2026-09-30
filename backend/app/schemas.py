@@ -165,6 +165,8 @@ class SellerUpdate(BaseModel):
     monthly_goal: float | None = None
     commission_percent: float | None = None
     active: bool | None = None
+    email: str | None = None
+    new_password: str | None = Field(default=None, min_length=6)
 
 
 class SellerOut(BaseModel):

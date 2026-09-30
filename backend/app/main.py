@@ -689,9 +689,22 @@ def update_seller(seller_id: int, payload: schemas.SellerUpdate, db: Session = D
     seller = db.get(models.Seller, seller_id)
     if not seller:
         raise HTTPException(404, "Vendedor nao encontrado")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True, exclude={"email", "new_password"})
+    for key, value in changes.items():
         setattr(seller, key, value)
     if seller.user:
+        if payload.email is not None:
+            email = payload.email.strip().lower()
+            if not email:
+                raise HTTPException(400, "Informe o e-mail de acesso")
+            duplicate = db.query(models.User).filter(models.User.email == email, models.User.id != seller.user.id).first()
+            if duplicate:
+                raise HTTPException(400, "E-mail ja cadastrado")
+            seller.user.email = email
+        if payload.new_password:
+            if not has_permission(user, "users.change_password"):
+                raise HTTPException(403, "Permissao insuficiente para alterar a senha")
+            seller.user.password_hash = hash_password(payload.new_password)
         seller.user.name = seller.name
         seller.user.active = seller.active
     audit(db, user, "update", "seller", seller.id, seller.name)
