@@ -780,6 +780,7 @@ function Sales({ api, user }) {
     payment_condition_id: "",
     payment_due_date: "",
     delivery_address: "",
+    delivery_due_date: "",
     manual_address: false,
   };
   const [form, setForm] = useState(emptySale);
@@ -827,6 +828,7 @@ function Sales({ api, user }) {
       payment_condition_id: form.payment_method === "prazo" && form.payment_condition_id ? Number(form.payment_condition_id) : null,
       payment_due_date: form.payment_method === "prazo" && form.payment_due_date ? form.payment_due_date : null,
       delivery_address: form.delivery_address,
+      delivery_due_date: form.delivery_due_date || null,
       items: form.items.map((item) => ({ product_id: item.product_id, quantity: Number(item.quantity) })),
     };
     if (!payload.items.length) return setMessage("Adicione pelo menos um produto a venda.");
@@ -855,6 +857,7 @@ function Sales({ api, user }) {
       payment_condition_id: "",
       payment_due_date: sale.payment_due_date || "",
       delivery_address: sale.delivery_address || "",
+      delivery_due_date: sale.delivery_due_date || "",
       manual_address: false,
     });
     setMessage(`Editando venda #${sale.id}.`);
@@ -962,6 +965,10 @@ function Sales({ api, user }) {
           <textarea value={form.delivery_address} onChange={(e) => setForm({ ...form, delivery_address: e.target.value })} readOnly={!form.manual_address} required />
         </label>
         <label className="field">
+          <span>Prazo para entrega (opcional)</span>
+          <input type="date" value={form.delivery_due_date} onChange={(e) => setForm({ ...form, delivery_due_date: e.target.value })} />
+        </label>
+        <label className="field">
           <span>Quantidade</span>
           <input type="number" min="0.01" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} required />
         </label>
@@ -1028,7 +1035,7 @@ function Sales({ api, user }) {
     <Row
       key={sale.id}
       title={`${sale.customer_name || "Cliente antigo"} · ${money(sale.total_value)}`}
-      meta={`#${sale.id} · ${sale.seller_name} · ${sale.price_table_name || "preco anterior"} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")} · ${sale.status}`}
+      meta={`#${sale.id} · ${sale.seller_name} · ${sale.price_table_name || "preco anterior"} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")}${sale.delivery_due_date ? ` · Entrega ate ${new Date(`${sale.delivery_due_date}T12:00:00`).toLocaleDateString("pt-BR")}` : ""} · ${sale.status}`}
       onEdit={allowed(user, "sales.edit") && sale.status === "confirmada" && sale.customer_id ? () => startEdit(sale) : null}
       actions={
         allowed(user, "sales.cancel") && sale.status === "confirmada" ? (
@@ -1198,6 +1205,7 @@ function Deliveries({ api, token }) {
                   <small>
                     {sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")} · {money(sale.total_value)}
                   </small>
+                  {sale.delivery_due_date && <small>Prazo de entrega: {new Date(`${sale.delivery_due_date}T12:00:00`).toLocaleDateString("pt-BR")}</small>}
                 </span>
               </label>
               {selected[sale.id] && (
