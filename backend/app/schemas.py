@@ -199,6 +199,7 @@ class SaleCreate(BaseModel):
     credit_override_reason: str | None = None
     delivery_address: str = Field(min_length=3, max_length=300)
     delivery_due_date: date | None = None
+    requires_invoice: bool = False
     total_value: float | None = None
     items: list[SaleItemCreate]
 
@@ -220,6 +221,7 @@ class SaleUpdate(BaseModel):
     credit_override_reason: str | None = None
     delivery_address: str = Field(min_length=3, max_length=300)
     delivery_due_date: date | None = None
+    requires_invoice: bool = False
     total_value: float | None = None
     items: list[SaleItemCreate] = Field(min_length=1)
 
@@ -254,6 +256,7 @@ class SaleOut(BaseModel):
     payment_due_date: date | None = None
     delivery_address: str | None = None
     delivery_due_date: date | None = None
+    requires_invoice: bool = False
     status: str
     items: list[SaleItemOut]
 

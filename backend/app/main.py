@@ -112,6 +112,7 @@ def sale_to_schema(sale: models.Sale) -> schemas.SaleOut:
         payment_due_date=sale.payment_term.due_date if sale.payment_term else None,
         delivery_address=sale.delivery_detail.delivery_address if sale.delivery_detail else (link.customer.address if link else None),
         delivery_due_date=sale.delivery_term.due_date if sale.delivery_term else None,
+        requires_invoice=bool(sale.fiscal_detail and sale.fiscal_detail.requires_invoice),
         status=sale.status,
         items=[
             schemas.SaleItemOut(
@@ -136,6 +137,7 @@ def sale_load_options():
         joinedload(models.Sale.payment_term),
         joinedload(models.Sale.delivery_detail),
         joinedload(models.Sale.delivery_term),
+        joinedload(models.Sale.fiscal_detail),
     )
 
 
@@ -796,6 +798,8 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
     sale.delivery_detail = models.SaleDeliveryDetail(delivery_address=payload.delivery_address.strip())
     if payload.delivery_due_date:
         sale.delivery_term = models.SaleDeliveryTerm(due_date=payload.delivery_due_date)
+    if payload.requires_invoice:
+        sale.fiscal_detail = models.SaleFiscalDetail(requires_invoice=True)
     create_receivable(db, sale, customer.id, financial_due_date, user, payload.payment_condition_id)
     refresh_sale_commission(db, sale)
     audit(db, user, "create", "sale", sale.id, f"Venda R$ {sale.total_value:.2f}")
@@ -868,6 +872,14 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     elif sale.delivery_term:
         db.delete(sale.delivery_term)
         sale.delivery_term = None
+    if payload.requires_invoice:
+        if sale.fiscal_detail:
+            sale.fiscal_detail.requires_invoice = True
+        else:
+            sale.fiscal_detail = models.SaleFiscalDetail(requires_invoice=True)
+    elif sale.fiscal_detail:
+        db.delete(sale.fiscal_detail)
+        sale.fiscal_detail = None
     if payload.payment_method == "prazo":
         if sale.payment_term:
             sale.payment_term.due_date = financial_due_date

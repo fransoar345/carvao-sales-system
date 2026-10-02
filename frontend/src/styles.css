@@ -87,6 +87,7 @@ textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
 .list { min-height: 180px; }
 .check { display: flex; align-items: center; gap: 10px; color: #39483e; }
 .check input { width: 18px; min-height: 18px; }
+.fiscal-choice { min-height: 48px; padding: 0 12px; border: 1px solid #cfd8cd; border-radius: 8px; background: #fbfcfa; font-weight: 700; }
 .error { color: #b42318; }
 .sale-stack { display: grid; gap: 16px; }
 .sale-items { display: grid; border: 1px solid #dfe6dd; border-radius: 8px; padding: 0 12px; }

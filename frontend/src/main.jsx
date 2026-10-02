@@ -781,6 +781,7 @@ function Sales({ api, user }) {
     payment_due_date: "",
     delivery_address: "",
     delivery_due_date: "",
+    requires_invoice: false,
     manual_address: false,
   };
   const [form, setForm] = useState(emptySale);
@@ -829,6 +830,7 @@ function Sales({ api, user }) {
       payment_due_date: form.payment_method === "prazo" && form.payment_due_date ? form.payment_due_date : null,
       delivery_address: form.delivery_address,
       delivery_due_date: form.delivery_due_date || null,
+      requires_invoice: form.requires_invoice,
       items: form.items.map((item) => ({ product_id: item.product_id, quantity: Number(item.quantity) })),
     };
     if (!payload.items.length) return setMessage("Adicione pelo menos um produto a venda.");
@@ -858,6 +860,7 @@ function Sales({ api, user }) {
       payment_due_date: sale.payment_due_date || "",
       delivery_address: sale.delivery_address || "",
       delivery_due_date: sale.delivery_due_date || "",
+      requires_invoice: Boolean(sale.requires_invoice),
       manual_address: false,
     });
     setMessage(`Editando venda #${sale.id}.`);
@@ -968,6 +971,10 @@ function Sales({ api, user }) {
           <span>Prazo para entrega (opcional)</span>
           <input type="date" value={form.delivery_due_date} onChange={(e) => setForm({ ...form, delivery_due_date: e.target.value })} />
         </label>
+        <label className="check fiscal-choice">
+          <input type="checkbox" checked={form.requires_invoice} onChange={(e) => setForm({ ...form, requires_invoice: e.target.checked })} />
+          <span>{form.requires_invoice ? "Venda com nota fiscal" : "Venda sem nota fiscal"}</span>
+        </label>
         <label className="field">
           <span>Quantidade</span>
           <input type="number" min="0.01" step="0.01" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} required />
@@ -1035,7 +1042,7 @@ function Sales({ api, user }) {
     <Row
       key={sale.id}
       title={`${sale.customer_name || "Cliente antigo"} · ${money(sale.total_value)}`}
-      meta={`#${sale.id} · ${sale.seller_name} · ${sale.price_table_name || "preco anterior"} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")}${sale.delivery_due_date ? ` · Entrega ate ${new Date(`${sale.delivery_due_date}T12:00:00`).toLocaleDateString("pt-BR")}` : ""} · ${sale.status}`}
+      meta={`#${sale.id} · ${sale.seller_name} · ${sale.price_table_name || "preco anterior"} · ${sale.requires_invoice ? "Com nota fiscal" : "Sem nota fiscal"} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")}${sale.delivery_due_date ? ` · Entrega ate ${new Date(`${sale.delivery_due_date}T12:00:00`).toLocaleDateString("pt-BR")}` : ""} · ${sale.status}`}
       onEdit={allowed(user, "sales.edit") && sale.status === "confirmada" && sale.customer_id ? () => startEdit(sale) : null}
       actions={
         allowed(user, "sales.cancel") && sale.status === "confirmada" ? (

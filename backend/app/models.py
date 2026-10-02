@@ -184,6 +184,7 @@ class Sale(Base, TimestampMixin):
     payment_term = relationship("SalePaymentTerm", cascade="all, delete-orphan", back_populates="sale", uselist=False)
     delivery_detail = relationship("SaleDeliveryDetail", cascade="all, delete-orphan", back_populates="sale", uselist=False)
     delivery_term = relationship("SaleDeliveryTerm", cascade="all, delete-orphan", back_populates="sale", uselist=False)
+    fiscal_detail = relationship("SaleFiscalDetail", cascade="all, delete-orphan", back_populates="sale", uselist=False)
 
 
 class SaleItem(Base):
@@ -227,6 +228,13 @@ class SaleDeliveryTerm(Base):
     sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), primary_key=True)
     due_date: Mapped[date] = mapped_column(Date, index=True)
     sale = relationship("Sale", back_populates="delivery_term")
+
+
+class SaleFiscalDetail(Base):
+    __tablename__ = "sale_fiscal_details"
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), primary_key=True)
+    requires_invoice: Mapped[bool] = mapped_column(Boolean, default=True)
+    sale = relationship("Sale", back_populates="fiscal_detail")
 
 
 class CostCenter(Base, TimestampMixin):
