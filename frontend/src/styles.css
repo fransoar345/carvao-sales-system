@@ -102,6 +102,9 @@ textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
 .price-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; padding-top: 4px; border-top: 1px solid #edf1eb; }
 .inline-customer { border-left: 4px solid #ffbf47; }
 .finance-page { display: grid; gap: 16px; }
+.finance-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 5px; background: #e6ece5; border: 1px solid #d5ded3; border-radius: 8px; }
+.finance-tabs button { flex: 1 0 auto; min-height: 42px; padding: 0 16px; border-radius: 6px; background: transparent; color: #435047; font-weight: 700; }
+.finance-tabs button.active { background: #fff; color: #17201a; box-shadow: 0 1px 4px rgba(29, 46, 33, 0.12); }
 .finance-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .finance-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .finance-subtitle { margin-top: 14px; padding-top: 16px; border-top: 1px solid #edf1eb; }
@@ -132,6 +135,7 @@ textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
   header h1 { font-size: 22px; }
   .customer-fields.compact, .price-grid { grid-template-columns: 1fr; }
   .finance-columns, .finance-metrics { grid-template-columns: 1fr; }
+  .finance-tabs button { flex: 0 0 auto; }
   .access-columns { grid-template-columns: 1fr; }
   .user-create-grid { grid-template-columns: 1fr; }
   .customer-fields.compact .field:nth-child(4), .customer-fields.compact .field:nth-child(5) { grid-column: auto; }

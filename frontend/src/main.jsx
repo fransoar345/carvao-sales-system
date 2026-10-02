@@ -1335,6 +1335,7 @@ function AccessControl({ api }) {
 
 function Finance({ api, user }) {
   const today = new Date().toISOString().slice(0, 10);
+  const [financeTab, setFinanceTab] = useState("summary");
   const dashboard = useLoad(api, () => api.call("/finance/dashboard"), []);
   const receivables = useLoad(api, () => api.call("/finance/receivables"), []);
   const payables = useLoad(api, () => api.call("/finance/payables"), []);
@@ -1410,29 +1411,44 @@ function Finance({ api, user }) {
   }
   if (!dashboard.data) return <Loading />;
   return <section className="finance-page">
-    <div className="grid finance-metrics">
-      <Metric label="Saldo em contas" value={money(dashboard.data.cash_balance)} />
-      <Metric label="Total a receber" value={money(dashboard.data.receivable_open)} />
-      <Metric label="Total a pagar" value={money(dashboard.data.payable_open)} />
-      <Metric label="Recebimentos hoje" value={money(dashboard.data.received_today)} />
-      <Metric label="Pagamentos hoje" value={money(dashboard.data.paid_today)} />
-      <Metric label="Clientes inadimplentes" value={dashboard.data.overdue_customers} />
+    <div className="finance-tabs" role="tablist" aria-label="Secoes do financeiro">
+      {[
+        ["summary", "Resumo"],
+        ["receivables", "Contas a receber"],
+        ["payables", "Contas a pagar"],
+        ["commissions", "Comissoes"],
+        ["settings", "Cadastros"],
+      ].map(([id, label]) => (
+        <button key={id} type="button" role="tab" aria-selected={financeTab === id} className={financeTab === id ? "active" : ""} onClick={() => setFinanceTab(id)}>
+          {label}
+        </button>
+      ))}
     </div>
     {message && <p className="panel form-status">{message}</p>}
-    <div className="finance-columns">
-      <Panel title="Contas a receber">{(receivables.data || []).map((row) => <Row key={row.id} title={`${row.customer_name} · ${money(row.balance)}`} meta={`Venda #${row.sale_id} · ${row.installments.length} parcela(s): ${row.installments.map((item) => `${item.number}/${new Date(`${item.due_date}T12:00:00`).toLocaleDateString("pt-BR")} ${item.status}`).join("; ")} · ${row.status} · ${row.seller_name}`} actions={<>{row.balance > 0 && row.status !== "cancelado" && <button onClick={() => settle("receivables", row)}>Receber</button>}{allowed(user, "finance.edit_receivables") && <button onClick={() => adjust(row)}>Ajustar</button>}{allowed(user, "finance.edit_receivables") && <button onClick={() => collect(row)}>Cobranca</button>}{allowed(user, "customers.change_credit_limit") && <button onClick={() => configureCredit(row)}>Credito</button>}{allowed(user, "finance.reverse_payments") && row.paid_amount > 0 && <button onClick={() => reverseLast("receivables", row)}>Estornar</button>}</>} />)}</Panel>
+    {financeTab === "summary" && <>
+      <div className="grid finance-metrics">
+        <Metric label="Saldo em contas" value={money(dashboard.data.cash_balance)} />
+        <Metric label="Total a receber" value={money(dashboard.data.receivable_open)} />
+        <Metric label="Total a pagar" value={money(dashboard.data.payable_open)} />
+        <Metric label="Recebimentos hoje" value={money(dashboard.data.received_today)} />
+        <Metric label="Pagamentos hoje" value={money(dashboard.data.paid_today)} />
+        <Metric label="Clientes inadimplentes" value={dashboard.data.overdue_customers} />
+      </div>
+      <Panel title="Fluxo de caixa">{(cashFlow.data || []).map((row) => <Row key={row.id} title={`${row.direction === "entrada" ? "+" : "-"} ${money(row.amount)} · ${row.account_name}`} meta={`${new Date(row.occurred_at).toLocaleString("pt-BR")} · ${row.description}`} />)}</Panel>
+    </>}
+    {financeTab === "receivables" && <Panel title="Contas a receber">{(receivables.data || []).map((row) => <Row key={row.id} title={`${row.customer_name} · ${money(row.balance)}`} meta={`Venda #${row.sale_id} · ${row.installments.length} parcela(s): ${row.installments.map((item) => `${item.number}/${new Date(`${item.due_date}T12:00:00`).toLocaleDateString("pt-BR")} ${item.status}`).join("; ")} · ${row.status} · ${row.seller_name}`} actions={<>{row.balance > 0 && row.status !== "cancelado" && <button onClick={() => settle("receivables", row)}>Receber</button>}{allowed(user, "finance.edit_receivables") && <button onClick={() => adjust(row)}>Ajustar</button>}{allowed(user, "finance.edit_receivables") && <button onClick={() => collect(row)}>Cobranca</button>}{allowed(user, "customers.change_credit_limit") && <button onClick={() => configureCredit(row)}>Credito</button>}{allowed(user, "finance.reverse_payments") && row.paid_amount > 0 && <button onClick={() => reverseLast("receivables", row)}>Estornar</button>}</>} />)}</Panel>}
+    {financeTab === "payables" && <div className="finance-columns">
       <Panel title="Contas a pagar">{(payables.data || []).map((row) => <Row key={row.id} title={`${row.description} · ${money(row.balance)}`} meta={`${row.supplier_name || "Sem fornecedor"} · ${row.cost_center_name} · ${new Date(`${row.due_date}T12:00:00`).toLocaleDateString("pt-BR")} · ${row.status}`} actions={<>{row.balance > 0 && row.status !== "cancelado" && <button onClick={() => settle("payables", row)}>Pagar</button>}{allowed(user, "finance.reverse_payments") && row.paid_amount > 0 && <button onClick={() => reverseLast("payables", row)}>Estornar</button>}</>} />)}</Panel>
-    </div>
-    <Panel title="Comissoes dos vendedores">
+      <form className="panel form" onSubmit={addPayable}><h2>Nova conta a pagar</h2><label className="field"><span>Descricao</span><input value={payable.description} onChange={(e) => setPayable({ ...payable, description: e.target.value })} required /></label><label className="field"><span>Fornecedor</span><select value={payable.supplier_id} onChange={(e) => setPayable({ ...payable, supplier_id: e.target.value })}><option value="">Sem fornecedor</option>{(suppliers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Centro de custo</span><select value={payable.cost_center_id} onChange={(e) => setPayable({ ...payable, cost_center_id: e.target.value })} required><option value="">Selecione</option>{(centers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Categoria</span><input value={payable.category} onChange={(e) => setPayable({ ...payable, category: e.target.value })} required /></label><label className="field"><span>Competencia</span><input type="date" value={payable.competence_date} onChange={(e) => setPayable({ ...payable, competence_date: e.target.value })} required /></label><label className="field"><span>Vencimento</span><input type="date" value={payable.due_date} onChange={(e) => setPayable({ ...payable, due_date: e.target.value })} required /></label><label className="field"><span>Valor</span><input type="number" min="0.01" step="0.01" value={payable.original_amount} onChange={(e) => setPayable({ ...payable, original_amount: e.target.value })} required /></label><button className="primary"><Save size={16} /> Salvar despesa</button></form>
+    </div>}
+    {financeTab === "commissions" && <Panel title="Comissoes dos vendedores">
       {(commissions.data || []).map((row) => <Row key={row.id} title={`${row.seller_name} · ${money(row.amount)}`} meta={`Venda #${row.sale_id} · ${row.customer_name} · ${row.commission_percent}% · ${row.status === "paga" ? `Paga em ${new Date(row.paid_at).toLocaleDateString("pt-BR")}${row.paid_by_name ? ` por ${row.paid_by_name}` : ""}` : "Pendente"}`} actions={<>{row.status === "pendente" && allowed(user, "finance.settle_titles") && <button className="primary" onClick={() => payCommission(row)}>Marcar paga</button>}{row.status === "paga" && allowed(user, "finance.reverse_payments") && <button onClick={() => unpayCommission(row)}>Estornar</button>}</>} />)}
       {!(commissions.data || []).length && <p className="empty-hint">Nenhuma comissao pendente ou paga.</p>}
-    </Panel>
-    <div className="finance-columns">
-      <form className="panel form" onSubmit={addPayable}><h2>Nova conta a pagar</h2><label className="field"><span>Descricao</span><input value={payable.description} onChange={(e) => setPayable({ ...payable, description: e.target.value })} required /></label><label className="field"><span>Fornecedor</span><select value={payable.supplier_id} onChange={(e) => setPayable({ ...payable, supplier_id: e.target.value })}><option value="">Sem fornecedor</option>{(suppliers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Centro de custo</span><select value={payable.cost_center_id} onChange={(e) => setPayable({ ...payable, cost_center_id: e.target.value })} required><option value="">Selecione</option>{(centers.data || []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Categoria</span><input value={payable.category} onChange={(e) => setPayable({ ...payable, category: e.target.value })} required /></label><label className="field"><span>Competencia</span><input type="date" value={payable.competence_date} onChange={(e) => setPayable({ ...payable, competence_date: e.target.value })} required /></label><label className="field"><span>Vencimento</span><input type="date" value={payable.due_date} onChange={(e) => setPayable({ ...payable, due_date: e.target.value })} required /></label><label className="field"><span>Valor</span><input type="number" min="0.01" step="0.01" value={payable.original_amount} onChange={(e) => setPayable({ ...payable, original_amount: e.target.value })} required /></label><button className="primary"><Save size={16} /> Salvar despesa</button></form>
+    </Panel>}
+    {financeTab === "settings" && <div className="finance-columns">
       <form className="panel form" onSubmit={addSupplier}><h2>Novo fornecedor</h2><label className="field"><span>Nome / Razao social</span><input value={supplier.name} onChange={(e) => setSupplier({ ...supplier, name: e.target.value })} required /></label><label className="field"><span>CNPJ ou CPF</span><input value={supplier.document} onChange={(e) => setSupplier({ ...supplier, document: e.target.value })} /></label><label className="field"><span>Telefone</span><input value={supplier.phone} onChange={(e) => setSupplier({ ...supplier, phone: e.target.value })} /></label><label className="field"><span>E-mail</span><input type="email" value={supplier.email} onChange={(e) => setSupplier({ ...supplier, email: e.target.value })} /></label><button className="primary"><Save size={16} /> Salvar fornecedor</button><h2 className="finance-subtitle">Contas e saldos</h2>{(accounts.data || []).map((row) => <Row key={row.id} title={row.name} meta={`${row.account_type} · ${money(row.balance)}`} />)}</form>
-    </div>
-    {allowed(user, "settings.financial") && <form className="panel form max" onSubmit={addCondition}><h2>Condicoes de pagamento</h2><label className="field"><span>Nome</span><input value={condition.name} onChange={(e) => setCondition({ ...condition, name: e.target.value })} placeholder="Ex.: 30 / 60 / 90 dias" required /></label><label className="field"><span>Dias das parcelas (separados por virgula)</span><input value={condition.installment_days} onChange={(e) => setCondition({ ...condition, installment_days: e.target.value })} placeholder="30, 60, 90" required /></label><label className="field"><span>Juros ao mes (%)</span><input type="number" min="0" step="0.01" value={condition.interest_percent_month} onChange={(e) => setCondition({ ...condition, interest_percent_month: e.target.value })} /></label><label className="field"><span>Multa (%)</span><input type="number" min="0" step="0.01" value={condition.fine_percent} onChange={(e) => setCondition({ ...condition, fine_percent: e.target.value })} /></label><button className="primary"><Save size={16} /> Salvar condicao</button><div>{(conditions.data || []).map((item) => <Row key={item.id} title={item.name} meta={`${item.installment_days.join(" / ")} dias · juros ${item.interest_percent_month}% · multa ${item.fine_percent}%`} />)}</div></form>}
-    <Panel title="Fluxo de caixa">{(cashFlow.data || []).map((row) => <Row key={row.id} title={`${row.direction === "entrada" ? "+" : "-"} ${money(row.amount)} · ${row.account_name}`} meta={`${new Date(row.occurred_at).toLocaleString("pt-BR")} · ${row.description}`} />)}</Panel>
+      {allowed(user, "settings.financial") && <form className="panel form" onSubmit={addCondition}><h2>Condicoes de pagamento</h2><label className="field"><span>Nome</span><input value={condition.name} onChange={(e) => setCondition({ ...condition, name: e.target.value })} placeholder="Ex.: 30 / 60 / 90 dias" required /></label><label className="field"><span>Dias das parcelas (separados por virgula)</span><input value={condition.installment_days} onChange={(e) => setCondition({ ...condition, installment_days: e.target.value })} placeholder="30, 60, 90" required /></label><label className="field"><span>Juros ao mes (%)</span><input type="number" min="0" step="0.01" value={condition.interest_percent_month} onChange={(e) => setCondition({ ...condition, interest_percent_month: e.target.value })} /></label><label className="field"><span>Multa (%)</span><input type="number" min="0" step="0.01" value={condition.fine_percent} onChange={(e) => setCondition({ ...condition, fine_percent: e.target.value })} /></label><button className="primary"><Save size={16} /> Salvar condicao</button><div>{(conditions.data || []).map((item) => <Row key={item.id} title={item.name} meta={`${item.installment_days.join(" / ")} dias · juros ${item.interest_percent_month}% · multa ${item.fine_percent}%`} />)}</div></form>}
+    </div>}
   </section>;
 }
 
