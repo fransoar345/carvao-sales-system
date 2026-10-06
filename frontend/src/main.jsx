@@ -1043,13 +1043,19 @@ function Sales({ api, user }) {
       key={sale.id}
       title={`${sale.customer_name || "Cliente antigo"} · ${money(sale.total_value)}`}
       meta={`#${sale.id} · ${sale.seller_name} · ${sale.price_table_name || "preco anterior"} · ${sale.requires_invoice ? "Com nota fiscal" : "Sem nota fiscal"} · ${new Date(sale.occurred_at).toLocaleString("pt-BR")} · ${sale.items.map((item) => `${item.quantity}x ${item.product_name}`).join(", ")}${sale.delivery_due_date ? ` · Entrega ate ${new Date(`${sale.delivery_due_date}T12:00:00`).toLocaleDateString("pt-BR")}` : ""} · ${sale.status}`}
-      onEdit={allowed(user, "sales.edit") && sale.status === "confirmada" && sale.customer_id ? () => startEdit(sale) : null}
       actions={
-        allowed(user, "sales.cancel") && sale.status === "confirmada" ? (
-          <button className="danger" onClick={() => removeSale(sale)}>
-            <Trash2 size={16} /> Excluir
-          </button>
-        ) : null
+        sale.status === "confirmada" ? <>
+          {allowed(user, "sales.edit") && sale.customer_id && (
+            <button onClick={() => startEdit(sale)}>
+              <Pencil size={16} /> Alterar venda
+            </button>
+          )}
+          {allowed(user, "sales.cancel") && (
+            <button className="danger" onClick={() => removeSale(sale)}>
+              <Trash2 size={16} /> Excluir
+            </button>
+          )}
+        </> : null
       }
     />
   ));
