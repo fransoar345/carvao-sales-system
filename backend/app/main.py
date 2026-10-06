@@ -776,7 +776,11 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
             raise HTTPException(404, "Produto indisponivel")
         if product.current_stock < item.quantity:
             raise HTTPException(400, f"Estoque insuficiente para {product.name}")
-        unit_price = prices[item.product_id]
+        table_price = prices[item.product_id]
+        price_changed = item.unit_price is not None and abs(item.unit_price - table_price) > 0.001
+        if price_changed and not has_permission(user, "sales.change_price"):
+            raise HTTPException(403, "Permissao insuficiente para alterar o preco da tabela")
+        unit_price = item.unit_price if item.unit_price is not None and has_permission(user, "sales.change_price") else table_price
         subtotal = item.quantity * unit_price
         product.current_stock -= item.quantity
         total += subtotal
@@ -836,7 +840,14 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     products = {product.id: product for product in db.query(models.Product).filter(models.Product.id.in_(list(requested_by_product))).all()}
     if len(products) != len(requested_by_product) or any(not product.active for product in products.values()):
         raise HTTPException(404, "Um ou mais produtos estao indisponiveis")
-    total_preview = sum(quantity * prices[product_id] for product_id, quantity in requested_by_product.items())
+    requested_prices: dict[int, float] = {}
+    for item in payload.items:
+        table_price = prices[item.product_id]
+        price_changed = item.unit_price is not None and abs(item.unit_price - table_price) > 0.001
+        if price_changed and not has_permission(user, "sales.change_price"):
+            raise HTTPException(403, "Permissao insuficiente para alterar o preco da tabela")
+        requested_prices[item.product_id] = item.unit_price if item.unit_price is not None and has_permission(user, "sales.change_price") else table_price
+    total_preview = sum(quantity * requested_prices[product_id] for product_id, quantity in requested_by_product.items())
     receivable = db.query(models.Receivable).options(joinedload(models.Receivable.payments), joinedload(models.Receivable.installments)).filter(models.Receivable.sale_id == sale.id).first()
     if receivable and payload.payment_method == "prazo" and any(not payment.reversed for payment in receivable.payments): raise HTTPException(400, "Estorne as baixas antes de alterar uma venda a prazo")
     if payload.payment_method == "prazo": validate_customer_credit(db, customer, total_preview, payload.payment_condition_id, payload.credit_override_reason, user, sale.id)
@@ -852,7 +863,7 @@ def update_sale(sale_id: int, payload: schemas.SaleUpdate, db: Session = Depends
     total = 0.0
     for new_item in payload.items:
         product = products[new_item.product_id]
-        unit_price = prices[new_item.product_id]
+        unit_price = requested_prices[new_item.product_id]
         subtotal = new_item.quantity * unit_price
         product.current_stock -= new_item.quantity
         total += subtotal

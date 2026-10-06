@@ -185,7 +185,7 @@ class SellerOut(BaseModel):
 class SaleItemCreate(BaseModel):
     product_id: int
     quantity: float = Field(gt=0)
-    unit_price: float | None = None
+    unit_price: float | None = Field(default=None, ge=0)
 
 
 class SaleCreate(BaseModel):

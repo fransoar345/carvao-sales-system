@@ -799,7 +799,7 @@ function Sales({ api, user }) {
   const customer = (customersLoad.data || []).find((c) => c.id === Number(form.customer_id));
   const priceTable = tables.find((t) => t.id === (customer?.price_table_id || tables.find((x) => x.is_default)?.id));
   const unitPrice = priceTable?.items.find((i) => i.product_id === Number(form.product_id))?.price;
-  const total = form.items.reduce((sum, item) => sum + Number(item.quantity) * Number(priceTable?.items.find((price) => price.product_id === item.product_id)?.price || 0), 0);
+  const total = form.items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.unit_price || 0), 0);
   const customerAddress = customer ? `${customer.address}${customer.reference_point ? ` - Referencia: ${customer.reference_point}` : ""}` : "";
   function addItem() {
     const productId = Number(form.product_id);
@@ -812,7 +812,7 @@ function Sales({ api, user }) {
     if (!editingId && selected && nextQuantity > selected.current_stock) return setMessage(`Estoque insuficiente para ${selected.name}.`);
     const items = current
       ? form.items.map((item) => item.product_id === productId ? { ...item, quantity: nextQuantity } : item)
-      : [...form.items, { product_id: productId, quantity }];
+      : [...form.items, { product_id: productId, quantity, unit_price: Number(unitPrice) }];
     setForm({ ...form, items, product_id: "", quantity: 1 });
     setMessage("");
   }
@@ -831,7 +831,7 @@ function Sales({ api, user }) {
       delivery_address: form.delivery_address,
       delivery_due_date: form.delivery_due_date || null,
       requires_invoice: form.requires_invoice,
-      items: form.items.map((item) => ({ product_id: item.product_id, quantity: Number(item.quantity) })),
+      items: form.items.map((item) => ({ product_id: item.product_id, quantity: Number(item.quantity), unit_price: Number(item.unit_price) })),
     };
     if (!payload.items.length) return setMessage("Adicione pelo menos um produto a venda.");
     try {
@@ -854,7 +854,7 @@ function Sales({ api, user }) {
       customer_id: String(sale.customer_id || ""),
       product_id: "",
       quantity: 1,
-      items: sale.items.map((item) => ({ product_id: item.product_id, quantity: item.quantity })),
+      items: sale.items.map((item) => ({ product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price })),
       payment_method: sale.payment_method,
       payment_condition_id: "",
       payment_due_date: sale.payment_due_date || "",
@@ -985,8 +985,17 @@ function Sales({ api, user }) {
         <div className="sale-items">
           {form.items.map((item) => {
             const itemProduct = products.find((productRow) => productRow.id === item.product_id);
-            const itemPrice = priceTable?.items.find((price) => price.product_id === item.product_id)?.price || 0;
-            return <div className="sale-item" key={item.product_id}><div><strong>{itemProduct?.name || `Produto #${item.product_id}`}</strong><span>{item.quantity} x {money(itemPrice)} = {money(item.quantity * itemPrice)}</span></div><button type="button" className="danger" title="Remover produto" onClick={() => removeItem(item.product_id)}><Trash2 size={16} /></button></div>;
+            return <div className="sale-item" key={item.product_id}>
+              <div className="sale-item-info">
+                <strong>{itemProduct?.name || `Produto #${item.product_id}`}</strong>
+                <span>{item.quantity} x {money(item.unit_price)} = {money(item.quantity * item.unit_price)}</span>
+              </div>
+              {allowed(user, "sales.change_price") && <label className="sale-price">
+                <span>Preco unitario</span>
+                <input type="number" min="0" step="0.01" value={item.unit_price} onChange={(e) => setForm({ ...form, items: form.items.map((row) => row.product_id === item.product_id ? { ...row, unit_price: e.target.value } : row) })} required />
+              </label>}
+              <button type="button" className="danger" title="Remover produto" onClick={() => removeItem(item.product_id)}><Trash2 size={16} /></button>
+            </div>;
           })}
           {!form.items.length && <p className="empty-hint">Nenhum produto adicionado.</p>}
         </div>
