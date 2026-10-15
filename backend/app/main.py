@@ -22,7 +22,7 @@ from .auth import create_access_token, get_current_user, hash_password, has_perm
 from .config import get_settings
 from .database import Base, engine, get_db
 from .seed import seed_data
-from .whatsapp import get_whatsapp_settings, notify_low_stock, notify_sale, send_daily_summary, send_whatsapp
+from .whatsapp import get_whatsapp_settings, notify_delivery_status, notify_low_stock, notify_manifest_created, notify_manifest_status, notify_sale, send_daily_summary, send_whatsapp
 
 
 settings = get_settings()
@@ -1008,7 +1008,7 @@ def list_delivery_manifests(db: Session = Depends(get_db), user: models.User = D
 
 
 @app.post("/api/delivery-manifests", response_model=schemas.DeliveryManifestOut)
-def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.create"))):
+async def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.create"))):
     sale_ids = [item.sale_id for item in payload.items]
     if len(sale_ids) != len(set(sale_ids)):
         raise HTTPException(400, "Uma venda nao pode aparecer duas vezes no mesmo romaneio")
@@ -1045,11 +1045,13 @@ def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: Sessio
     manifest.code = f"ROM-{payload.delivery_date:%Y%m%d}-{manifest.id:04d}"
     audit(db, user, "create", "delivery_manifest", manifest.id, f"{manifest.code} com {len(manifest.items)} entregas")
     db.commit()
-    return delivery_manifest_to_schema(get_delivery_manifest(db, manifest.id))
+    manifest = get_delivery_manifest(db, manifest.id)
+    await notify_manifest_created(db, manifest)
+    return delivery_manifest_to_schema(manifest)
 
 
 @app.put("/api/delivery-manifests/{manifest_id}/status", response_model=schemas.DeliveryManifestOut)
-def update_delivery_manifest_status(manifest_id: int, payload: schemas.DeliveryManifestStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+async def update_delivery_manifest_status(manifest_id: int, payload: schemas.DeliveryManifestStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     needed = {"em_rota": "manifests.start_route", "concluido": "manifests.finish_route", "cancelado": "manifests.cancel"}.get(payload.status, "manifests.edit")
     if not has_permission(user, needed): raise HTTPException(403, "Permissao insuficiente")
     allowed = {"preparacao", "em_rota", "concluido", "cancelado"}
@@ -1060,6 +1062,7 @@ def update_delivery_manifest_status(manifest_id: int, payload: schemas.DeliveryM
         raise HTTPException(403, "Romaneio atribuido a outro motorista")
     if payload.status == "concluido" and any(item.status != "entregue" for item in manifest.items):
         raise HTTPException(400, "Confirme todas as entregas antes de concluir o romaneio")
+    previous_status = manifest.status
     manifest.status = payload.status
     if payload.status == "cancelado":
         for item in manifest.items:
@@ -1067,11 +1070,14 @@ def update_delivery_manifest_status(manifest_id: int, payload: schemas.DeliveryM
                 item.status = "cancelado"
     audit(db, user, "status", "delivery_manifest", manifest.id, payload.status)
     db.commit()
-    return delivery_manifest_to_schema(get_delivery_manifest(db, manifest.id))
+    manifest = get_delivery_manifest(db, manifest.id)
+    if previous_status != manifest.status:
+        await notify_manifest_status(db, manifest, previous_status, user.name)
+    return delivery_manifest_to_schema(manifest)
 
 
 @app.put("/api/delivery-manifests/{manifest_id}/items/{item_id}", response_model=schemas.DeliveryManifestOut)
-def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.DeliveryItemStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.confirm_delivery"))):
+async def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.DeliveryItemStatusUpdate, db: Session = Depends(get_db), user: models.User = Depends(require_permission("manifests.confirm_delivery"))):
     allowed = {"pendente", "entregue", "nao_entregue"}
     if payload.status not in allowed:
         raise HTTPException(400, "Status de entrega invalido")
@@ -1083,6 +1089,7 @@ def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.Delive
     item = next((row for row in manifest.items if row.id == item_id), None)
     if not item:
         raise HTTPException(404, "Entrega nao encontrada")
+    previous_status = item.status
     item.status = payload.status
     item.note = payload.note
     item.delivered_at = datetime.utcnow() if payload.status == "entregue" else None
@@ -1092,7 +1099,11 @@ def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.Delive
         manifest.status = "concluido"
     audit(db, user, "status", "delivery_manifest_item", item.id, payload.status)
     db.commit()
-    return delivery_manifest_to_schema(get_delivery_manifest(db, manifest.id))
+    manifest = get_delivery_manifest(db, manifest.id)
+    item = next(row for row in manifest.items if row.id == item_id)
+    if previous_status != item.status:
+        await notify_delivery_status(db, manifest, item, previous_status, user.name)
+    return delivery_manifest_to_schema(manifest)
 
 
 @app.get("/api/delivery-manifests/{manifest_id}/pdf")

@@ -6,6 +6,27 @@ from . import models
 from .config import get_settings
 
 
+def split_telegram_message(message: str, limit: int = 4000) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+    for line in message.splitlines() or [message]:
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [""]
+
+
 def get_whatsapp_settings(db: Session) -> models.WhatsAppSettings:
     settings = db.query(models.WhatsAppSettings).first()
     if settings:
@@ -54,6 +75,13 @@ async def send_whatsapp(db: Session, to: str, message: str) -> dict:
         headers = {"Authorization": f"Bearer {settings.token}"} if settings.token else {}
         payload = {"to": to, "message": message}
     async with httpx.AsyncClient(timeout=15) as client:
+        if settings.provider == "telegram":
+            responses = []
+            for chunk in split_telegram_message(message):
+                response = await client.post(api_url, json={"chat_id": to, "text": chunk}, headers=headers)
+                response.raise_for_status()
+                responses.append(response.status_code)
+            return {"ok": True, "provider": settings.provider, "status_code": responses[-1], "messages": len(responses)}
         response = await client.post(api_url, json=payload, headers=headers)
         response.raise_for_status()
         return {"ok": True, "provider": settings.provider, "status_code": response.status_code}
@@ -96,6 +124,68 @@ async def notify_low_stock(db: Session, product: models.Product) -> None:
             settings.manager_phone,
             f"Alerta de estoque baixo: {product.name} com {product.current_stock:g} {product.unit}.",
         )
+
+
+MANIFEST_STATUS_NAMES = {
+    "preparacao": "Em preparacao",
+    "em_rota": "Em rota",
+    "concluido": "Concluido",
+    "cancelado": "Cancelado",
+    "pendente": "Pendente",
+    "entregue": "Entregue",
+    "nao_entregue": "Nao entregue",
+}
+
+
+def manifest_item_text(item: models.DeliveryManifestItem) -> str:
+    sale = item.sale
+    company = sale.customer_link.customer.legal_name if sale.customer_link else (sale.customer_name or f"Venda #{sale.id}")
+    products = ", ".join(f"{row.quantity:g}x {row.product.name}" for row in sale.items)
+    return f"{item.delivery_order}. {company}: {products}. Endereco: {item.delivery_address}"
+
+
+async def notify_manifest_created(db: Session, manifest: models.DeliveryManifest) -> None:
+    settings = get_whatsapp_settings(db)
+    if settings.provider != "telegram":
+        return
+    deliveries = "\n".join(manifest_item_text(item) for item in manifest.items)
+    message = (
+        f"Romaneio gerado: {manifest.code}\n"
+        f"Data de entrega: {manifest.delivery_date:%d/%m/%Y}\n"
+        f"Motorista: {manifest.driver_name}\n"
+        f"Veiculo: {manifest.vehicle or 'Nao informado'}\n"
+        f"Entregas: {len(manifest.items)}\n{deliveries}"
+    )
+    await send_notification_safely(db, settings.manager_phone, message)
+
+
+async def notify_manifest_status(db: Session, manifest: models.DeliveryManifest, previous_status: str, actor_name: str) -> None:
+    settings = get_whatsapp_settings(db)
+    if settings.provider != "telegram":
+        return
+    message = (
+        f"Status do romaneio alterado: {manifest.code}\n"
+        f"{MANIFEST_STATUS_NAMES.get(previous_status, previous_status)} -> {MANIFEST_STATUS_NAMES.get(manifest.status, manifest.status)}\n"
+        f"Motorista: {manifest.driver_name}\n"
+        f"Alterado por: {actor_name}"
+    )
+    await send_notification_safely(db, settings.manager_phone, message)
+
+
+async def notify_delivery_status(db: Session, manifest: models.DeliveryManifest, item: models.DeliveryManifestItem, previous_status: str, actor_name: str) -> None:
+    settings = get_whatsapp_settings(db)
+    if settings.provider != "telegram":
+        return
+    message = (
+        f"Status da entrega alterado: {manifest.code}\n"
+        f"Entrega {item.delivery_order}: {MANIFEST_STATUS_NAMES.get(previous_status, previous_status)} -> {MANIFEST_STATUS_NAMES.get(item.status, item.status)}\n"
+        f"{manifest_item_text(item)}\n"
+        f"Status do romaneio: {MANIFEST_STATUS_NAMES.get(manifest.status, manifest.status)}\n"
+        f"Alterado por: {actor_name}"
+    )
+    if item.note:
+        message += f"\nObservacao: {item.note}"
+    await send_notification_safely(db, settings.manager_phone, message)
 
 
 async def send_daily_summary(db: Session, day: datetime | None = None) -> None:
