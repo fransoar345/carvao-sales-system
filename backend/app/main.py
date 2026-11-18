@@ -1657,6 +1657,41 @@ def owner_top_customers(
     return {"period": period, "start": start_date, "end": end_date, "customers": build_customer_ranking(owner_sales_query(db, start_date, end_date))}
 
 
+@app.get("/api/dono/aguardando-entrega")
+def owner_waiting_deliveries(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_owner),
+):
+    query = (
+        db.query(models.Sale)
+        .options(
+            joinedload(models.Sale.seller),
+            joinedload(models.Sale.customer_link).joinedload(models.SaleCustomerLink.customer),
+            joinedload(models.Sale.delivery_term),
+            joinedload(models.Sale.items).joinedload(models.SaleItem.product),
+        )
+        .filter(models.Sale.status == "confirmada", models.Sale.delivery_status.in_(["pendente", "em_rota"]))
+    )
+    total = query.count()
+    sales = query.order_by(models.Sale.occurred_at.asc()).limit(100).all()
+    return {
+        "total": total,
+        "sales": [
+            {
+                "id": sale.id,
+                "occurred_at": sale.occurred_at,
+                "delivery_due_date": sale.delivery_term.due_date if sale.delivery_term else None,
+                "customer_name": sale.customer_link.customer.legal_name if sale.customer_link else (sale.customer_name or "Cliente nao informado"),
+                "seller_name": sale.seller.name,
+                "products": ", ".join(f"{item.quantity:g}x {item.product.name}" for item in sale.items),
+                "total_cents": money_to_cents(sale.total_value),
+                "delivery_status": sale.delivery_status,
+            }
+            for sale in sales
+        ],
+    }
+
+
 @app.get("/api/dashboard")
 def dashboard(
     start: date | None = Query(None),

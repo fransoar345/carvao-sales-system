@@ -310,6 +310,7 @@ function OwnerDashboard({ api }) {
   const salesChart = useOwnerBlock(api, `/dono/vendas-por-dia?period=${period}`);
   const sellers = useOwnerBlock(api, `/dono/vendedores?period=${period}`);
   const customers = useOwnerBlock(api, `/dono/clientes?period=${period}`);
+  const waitingDeliveries = useOwnerBlock(api, "/dono/aguardando-entrega");
   const sellerChart = (sellers.data?.sellers || []).map((row) => ({ ...row, revenue: row.revenue_cents / 100 }));
 
   return <section className="owner-page">
@@ -331,6 +332,16 @@ function OwnerDashboard({ api }) {
         <div className="owner-table-wrap"><table className="owner-table"><thead><tr><th>Pedido</th><th>Horario</th><th>Cliente</th><th>Vendedor</th><th>Status</th><th className="numeric">Valor</th></tr></thead><tbody>
           {(summary.data?.sales || []).map((sale) => <tr key={sale.id}><td>#{sale.id}</td><td>{ownerDate(sale.occurred_at, true)}</td><td>{sale.customer_name}</td><td>{sale.seller_name}</td><td><span className={`owner-status ${sale.delivery_status}`}>{ownerStatusLabels[sale.delivery_status]}</span></td><td className="numeric">{cents(sale.total_cents)}</td></tr>)}
           {!summary.data?.sales?.length && <tr><td colSpan="6" className="owner-empty">Nenhuma venda neste filtro.</td></tr>}
+        </tbody></table></div>
+      </section>
+    </OwnerBlock>
+
+    <OwnerBlock state={waitingDeliveries}>
+      <section className="panel owner-waiting">
+        <div className="owner-heading"><div><h2>Vendas aguardando entrega</h2><p>Pedidos pendentes ou em rota, do mais antigo para o mais recente.</p></div><strong className="owner-waiting-count">{waitingDeliveries.data?.total || 0}</strong></div>
+        <div className="owner-table-wrap"><table className="owner-table"><thead><tr><th>Pedido</th><th>Venda</th><th>Prazo</th><th>Cliente</th><th>Vendedor</th><th>Produtos</th><th>Status</th><th className="numeric">Valor</th></tr></thead><tbody>
+          {(waitingDeliveries.data?.sales || []).map((sale) => <tr key={sale.id}><td>#{sale.id}</td><td>{ownerDate(sale.occurred_at)}</td><td>{sale.delivery_due_date ? ownerDate(`${sale.delivery_due_date}T12:00:00Z`) : "Sem prazo"}</td><td>{sale.customer_name}</td><td>{sale.seller_name}</td><td className="owner-products">{sale.products || "-"}</td><td><span className={`owner-status ${sale.delivery_status}`}>{ownerStatusLabels[sale.delivery_status]}</span></td><td className="numeric">{cents(sale.total_cents)}</td></tr>)}
+          {!waitingDeliveries.data?.sales?.length && <tr><td colSpan="8" className="owner-empty">Nenhuma venda aguardando entrega.</td></tr>}
         </tbody></table></div>
       </section>
     </OwnerBlock>
