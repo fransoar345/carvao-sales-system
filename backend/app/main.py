@@ -21,6 +21,8 @@ from . import models, schemas
 from .auth import create_access_token, get_current_user, hash_password, has_permission, permission_codes, require_permission, require_roles, verify_password
 from .config import get_settings
 from .database import Base, engine, get_db
+from .migrations import run_runtime_migrations
+from .owner_dashboard import build_customer_ranking, build_daily_summary, build_seller_performance, group_sales_by_day, money_to_cents, period_dates, require_owner, utc_query_bounds
 from .seed import seed_data
 from .whatsapp import get_whatsapp_settings, notify_delivery_status, notify_low_stock, notify_manifest_created, notify_manifest_status, notify_sale, send_daily_summary, send_whatsapp
 
@@ -51,6 +53,7 @@ async def capture_request_context(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup():
+    run_runtime_migrations(engine)
     Base.metadata.create_all(bind=engine)
     db = next(get_db())
     try:
@@ -114,6 +117,7 @@ def sale_to_schema(sale: models.Sale) -> schemas.SaleOut:
         delivery_due_date=sale.delivery_term.due_date if sale.delivery_term else None,
         requires_invoice=bool(sale.fiscal_detail and sale.fiscal_detail.requires_invoice),
         status=sale.status,
+        delivery_status=sale.delivery_status,
         items=[
             schemas.SaleItemOut(
                 id=item.id,
@@ -240,6 +244,18 @@ def ensure_sale_not_in_active_manifest(db: Session, sale_id: int) -> None:
     )
     if assigned:
         raise HTTPException(400, "Cancele o romaneio ativo antes de alterar esta venda")
+
+
+def sync_manifest_delivery_status(manifest: models.DeliveryManifest) -> None:
+    for item in manifest.items:
+        if item.status == "entregue":
+            item.sale.delivery_status = "entregue"
+        elif item.status == "nao_entregue":
+            item.sale.delivery_status = "nao_entregue"
+        elif manifest.status == "em_rota":
+            item.sale.delivery_status = "em_rota"
+        else:
+            item.sale.delivery_status = "pendente"
 
 
 def financial_account_balance(db: Session, account: models.FinancialAccount) -> float:
@@ -767,7 +783,7 @@ async def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)
         raise HTTPException(400, "Inclua ao menos um item")
 
     customer, price_table, prices = resolve_customer_prices(db, payload.customer_id, seller_id, [item.product_id for item in payload.items])
-    sale = models.Sale(seller_id=seller_id, customer_name=customer.legal_name, customer_phone=customer.phone, payment_method=payload.payment_method, status="confirmada")
+    sale = models.Sale(seller_id=seller_id, customer_name=customer.legal_name, customer_phone=customer.phone, payment_method=payload.payment_method, status="confirmada", delivery_status="pendente")
     total = 0.0
     touched_products: list[models.Product] = []
     for item in payload.items:
@@ -1043,6 +1059,7 @@ async def create_delivery_manifest(payload: schemas.DeliveryManifestCreate, db: 
     db.add(manifest)
     db.flush()
     manifest.code = f"ROM-{payload.delivery_date:%Y%m%d}-{manifest.id:04d}"
+    sync_manifest_delivery_status(manifest)
     audit(db, user, "create", "delivery_manifest", manifest.id, f"{manifest.code} com {len(manifest.items)} entregas")
     db.commit()
     manifest = get_delivery_manifest(db, manifest.id)
@@ -1068,6 +1085,7 @@ async def update_delivery_manifest_status(manifest_id: int, payload: schemas.Del
         for item in manifest.items:
             if item.status != "entregue":
                 item.status = "cancelado"
+    sync_manifest_delivery_status(manifest)
     audit(db, user, "status", "delivery_manifest", manifest.id, payload.status)
     db.commit()
     manifest = get_delivery_manifest(db, manifest.id)
@@ -1097,6 +1115,7 @@ async def update_delivery_item(manifest_id: int, item_id: int, payload: schemas.
         manifest.status = "em_rota"
     if all(row.status == "entregue" for row in manifest.items):
         manifest.status = "concluido"
+    sync_manifest_delivery_status(manifest)
     audit(db, user, "status", "delivery_manifest_item", item.id, payload.status)
     db.commit()
     manifest = get_delivery_manifest(db, manifest.id)
@@ -1562,6 +1581,80 @@ def cash_flow(start: date | None = None, end: date | None = None, db: Session = 
     if end: query = query.filter(models.CashTransaction.occurred_at <= datetime.combine(end, time.max))
     rows = query.order_by(models.CashTransaction.occurred_at.desc()).limit(500).all()
     return [{"id": row.id, "account_name": row.account.name, "direction": row.direction, "amount": row.amount, "occurred_at": row.occurred_at, "description": row.description} for row in rows]
+
+
+def owner_sales_query(db: Session, start_date: date, end_date: date) -> list[models.Sale]:
+    start_dt, end_dt = utc_query_bounds(start_date, end_date)
+    return (
+        db.query(models.Sale)
+        .options(joinedload(models.Sale.seller), joinedload(models.Sale.customer_link).joinedload(models.SaleCustomerLink.customer))
+        .filter(models.Sale.status == "confirmada", models.Sale.occurred_at >= start_dt, models.Sale.occurred_at < end_dt)
+        .order_by(models.Sale.occurred_at.desc())
+        .all()
+    )
+
+
+@app.get("/api/dono/resumo")
+def owner_daily_summary(
+    status: str = Query("todos"),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_owner),
+):
+    if status not in {"todos", "pendente", "em_rota", "entregue", "nao_entregue"}:
+        raise HTTPException(400, "Status de entrega invalido")
+    start_date, end_date = period_dates("today")
+    summary = build_daily_summary(owner_sales_query(db, start_date, end_date), status)
+    return {
+        "date": start_date,
+        "total_cents": summary["total_cents"],
+        "orders": summary["orders"],
+        "delivery_counts": summary["delivery_counts"],
+        "sales": [
+            {
+                "id": sale.id,
+                "occurred_at": sale.occurred_at,
+                "customer_name": sale.customer_link.customer.legal_name if sale.customer_link else (sale.customer_name or "Cliente nao informado"),
+                "seller_name": sale.seller.name,
+                "total_cents": money_to_cents(sale.total_value),
+                "delivery_status": sale.delivery_status,
+            }
+            for sale in summary["sales"]
+        ],
+    }
+
+
+@app.get("/api/dono/vendas-por-dia")
+def owner_sales_by_day(
+    period: str = Query("7d"),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_owner),
+):
+    start_date, end_date = period_dates(period)
+    return {"period": period, "start": start_date, "end": end_date, "days": group_sales_by_day(owner_sales_query(db, start_date, end_date), start_date, end_date)}
+
+
+@app.get("/api/dono/vendedores")
+def owner_seller_performance(
+    period: str = Query("7d"),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_owner),
+):
+    start_date, end_date = period_dates(period)
+    sales = owner_sales_query(db, start_date, end_date)
+    sale_ids = [sale.id for sale in sales]
+    commissions = db.query(models.SellerCommission).filter(models.SellerCommission.sale_id.in_(sale_ids)).all() if sale_ids else []
+    rows = build_seller_performance(sales, {row.sale_id: row.amount for row in commissions})
+    return {"period": period, "start": start_date, "end": end_date, "sellers": rows}
+
+
+@app.get("/api/dono/clientes")
+def owner_top_customers(
+    period: str = Query("7d"),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_owner),
+):
+    start_date, end_date = period_dates(period)
+    return {"period": period, "start": start_date, "end": end_date, "customers": build_customer_ranking(owner_sales_query(db, start_date, end_date))}
 
 
 @app.get("/api/dashboard")

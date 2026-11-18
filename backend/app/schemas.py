@@ -258,6 +258,7 @@ class SaleOut(BaseModel):
     delivery_due_date: date | None = None
     requires_invoice: bool = False
     status: str
+    delivery_status: str = "pendente"
     items: list[SaleItemOut]
 
 

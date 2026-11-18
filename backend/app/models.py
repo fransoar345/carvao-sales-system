@@ -178,6 +178,7 @@ class Sale(Base, TimestampMixin):
     total_value: Mapped[float] = mapped_column(Float, default=0)
     payment_method: Mapped[str] = mapped_column(String(30))
     status: Mapped[str] = mapped_column(String(30), default="confirmada")
+    delivery_status: Mapped[str] = mapped_column(String(30), default="pendente", index=True)
     seller = relationship("Seller")
     items = relationship("SaleItem", cascade="all, delete-orphan", back_populates="sale")
     customer_link = relationship("SaleCustomerLink", cascade="all, delete-orphan", back_populates="sale", uselist=False)

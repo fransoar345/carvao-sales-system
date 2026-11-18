@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Building2, Ban, Boxes, CheckCircle2, ClipboardList, Trash2, Download, LogOut, MessageCircle, MapPin, PackagePlus, Pencil, Play, Printer, ReceiptText, Save, ShieldCheck, ShoppingCart, Truck, Tags, UserPlus, Users, WalletCards } from "lucide-react";
+import { BarChart3, Building2, Ban, Boxes, CheckCircle2, ClipboardList, Crown, Trash2, Download, LogOut, MessageCircle, MapPin, PackagePlus, Pencil, Play, Printer, ReceiptText, Save, ShieldCheck, ShoppingCart, Truck, Tags, UserPlus, Users, WalletCards } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import "./styles.css";
 
 const API = import.meta.env.VITE_API_URL || "https://carvao-sales-system-production.up.railway.app/api";
@@ -29,6 +30,10 @@ function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
   const [user, setUser] = useState(JSON.parse(localStorage.getItem("user") || "null"));
   const [tab, setTab] = useState("dashboard");
+
+  useEffect(() => {
+    if (window.location.pathname === "/dono" && user?.role === "admin") setTab("owner");
+  }, [user]);
 
   const api = useMemo(
     () => ({
@@ -70,6 +75,7 @@ function App() {
   const can = (permission) => (user.permissions || []).includes(permission);
   const tabs = [
     ["dashboard", "Dashboard", BarChart3, "dashboard.view"],
+    ...(user.role === "admin" ? [["owner", "Dono", Crown, null]] : []),
     ["sale", "Venda", ShoppingCart, "sales.create"],
     ["customers", "Clientes", Building2, ["customers.view_all", "customers.view_own"]],
     ["prices", "Tabelas", Tags, "settings.price_tables"],
@@ -80,7 +86,12 @@ function App() {
     ["sellers", "Vendedores", Users, "users.view"],
     ["access", "Perfis e Permissoes", ShieldCheck, "users.change_permissions"],
     ["whatsapp", "Alertas", MessageCircle, "settings.alerts"],
-  ].filter((item) => Array.isArray(item[3]) ? item[3].some(can) : can(item[3]));
+  ].filter((item) => item[3] === null || (Array.isArray(item[3]) ? item[3].some(can) : can(item[3])));
+
+  function selectTab(id) {
+    setTab(id);
+    window.history.pushState({}, "", id === "owner" ? "/dono" : "/");
+  }
 
   return (
     <div className="app">
@@ -94,7 +105,7 @@ function App() {
         </div>
         <nav>
           {tabs.map(([id, label, Icon]) => (
-            <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)} title={label}>
+            <button key={id} className={tab === id ? "active" : ""} onClick={() => selectTab(id)} title={label}>
               <Icon size={18} /> <span>{label}</span>
             </button>
           ))}
@@ -113,6 +124,7 @@ function App() {
           </div>
         </header>
         {tab === "dashboard" && <Dashboard api={api} token={token} user={user} />}
+        {tab === "owner" && user.role === "admin" && <OwnerDashboard api={api} />}
         {tab === "sale" && <Sales api={api} user={user} />}
         {tab === "customers" && <Customers api={api} user={user} />}
         {tab === "prices" && <PriceTables api={api} />}
@@ -250,6 +262,87 @@ function Dashboard({ api, token }) {
       </Panel>
     </section>
   );
+}
+
+const ownerPeriods = [
+  ["today", "Hoje"],
+  ["7d", "7 dias"],
+  ["30d", "30 dias"],
+  ["month", "Mes atual"],
+];
+
+const ownerStatusLabels = {
+  todos: "Todos",
+  pendente: "Pendente",
+  em_rota: "Em rota",
+  entregue: "Entregue",
+  nao_entregue: "Nao entregue",
+};
+
+const cents = (value) => money(Number(value || 0) / 100);
+const ownerDate = (value, withTime = false) => {
+  const normalized = value && !String(value).endsWith("Z") ? `${value}Z` : value;
+  return new Date(normalized).toLocaleString("pt-BR", withTime ? { dateStyle: "short", timeStyle: "short" } : { dateStyle: "short" });
+};
+
+function useOwnerBlock(api, path) {
+  const [state, setState] = useState({ data: null, error: "", loading: true });
+  const load = () => {
+    setState((current) => ({ ...current, loading: true, error: "" }));
+    api.call(path)
+      .then((data) => setState({ data, error: "", loading: false }))
+      .catch((error) => setState({ data: null, error: error.message, loading: false }));
+  };
+  useEffect(load, [api, path]);
+  return { ...state, reload: load };
+}
+
+function OwnerBlock({ state, children }) {
+  if (state.loading) return <div className="panel owner-loading">Carregando dados...</div>;
+  if (state.error) return <div className="panel owner-error"><strong>Nao foi possivel carregar este bloco.</strong><span>{state.error}</span><button onClick={state.reload}>Tentar novamente</button></div>;
+  return children;
+}
+
+function OwnerDashboard({ api }) {
+  const [period, setPeriod] = useState("7d");
+  const [status, setStatus] = useState("todos");
+  const summary = useOwnerBlock(api, `/dono/resumo?status=${status}`);
+  const salesChart = useOwnerBlock(api, `/dono/vendas-por-dia?period=${period}`);
+  const sellers = useOwnerBlock(api, `/dono/vendedores?period=${period}`);
+  const customers = useOwnerBlock(api, `/dono/clientes?period=${period}`);
+  const sellerChart = (sellers.data?.sellers || []).map((row) => ({ ...row, revenue: row.revenue_cents / 100 }));
+
+  return <section className="owner-page">
+    <div className="owner-period" role="tablist" aria-label="Periodo dos indicadores">
+      {ownerPeriods.map(([id, label]) => <button type="button" role="tab" aria-selected={period === id} className={period === id ? "active" : ""} key={id} onClick={() => setPeriod(id)}>{label}</button>)}
+    </div>
+
+    <OwnerBlock state={summary}>
+      <section className="owner-summary">
+        <div className="owner-heading"><div><h2>Resumo do dia</h2><p>Operacao comercial e entregas de hoje.</p></div><span>{summary.data?.date ? ownerDate(`${summary.data.date}T12:00:00Z`) : ""}</span></div>
+        <div className="owner-kpis">
+          <div className="owner-kpi"><span>Total vendido</span><strong>{cents(summary.data?.total_cents)}</strong></div>
+          <div className="owner-kpi"><span>Pedidos</span><strong>{summary.data?.orders || 0}</strong></div>
+          <div className="owner-kpi delivery delivered"><span>Entregues</span><strong>{summary.data?.delivery_counts?.entregue || 0}</strong></div>
+          <div className="owner-kpi delivery pending"><span>Pendentes</span><strong>{(summary.data?.delivery_counts?.pendente || 0) + (summary.data?.delivery_counts?.em_rota || 0)}</strong></div>
+          <div className="owner-kpi delivery failed"><span>Nao entregues</span><strong>{summary.data?.delivery_counts?.nao_entregue || 0}</strong></div>
+        </div>
+        <div className="owner-sales-head"><h3>Vendas de hoje</h3><select aria-label="Filtrar vendas por status" value={status} onChange={(event) => setStatus(event.target.value)}>{Object.entries(ownerStatusLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></div>
+        <div className="owner-table-wrap"><table className="owner-table"><thead><tr><th>Pedido</th><th>Horario</th><th>Cliente</th><th>Vendedor</th><th>Status</th><th className="numeric">Valor</th></tr></thead><tbody>
+          {(summary.data?.sales || []).map((sale) => <tr key={sale.id}><td>#{sale.id}</td><td>{ownerDate(sale.occurred_at, true)}</td><td>{sale.customer_name}</td><td>{sale.seller_name}</td><td><span className={`owner-status ${sale.delivery_status}`}>{ownerStatusLabels[sale.delivery_status]}</span></td><td className="numeric">{cents(sale.total_cents)}</td></tr>)}
+          {!summary.data?.sales?.length && <tr><td colSpan="6" className="owner-empty">Nenhuma venda neste filtro.</td></tr>}
+        </tbody></table></div>
+      </section>
+    </OwnerBlock>
+
+    <div className="owner-grid">
+      <OwnerBlock state={salesChart}><section className="panel owner-chart"><div className="owner-heading"><div><h2>Vendas por dia</h2><p>Faturamento no periodo selecionado.</p></div></div><div className="chart-frame"><ResponsiveContainer width="100%" height="100%"><LineChart data={salesChart.data?.days || []}><CartesianGrid stroke="#e4e9e2" vertical={false} /><XAxis dataKey="date" tickFormatter={(value) => value.slice(5).split("-").reverse().join("/")} /><YAxis tickFormatter={(value) => `R$ ${Math.round(value / 100)}`} /><Tooltip formatter={(value) => [cents(value), "Vendas"]} labelFormatter={(value) => ownerDate(`${value}T12:00:00Z`)} /><Line type="monotone" dataKey="total_cents" stroke="#1f6b45" strokeWidth={3} dot={{ r: 3, fill: "#1f6b45" }} /></LineChart></ResponsiveContainer></div></section></OwnerBlock>
+
+      <OwnerBlock state={customers}><section className="panel owner-customers"><div className="owner-heading"><div><h2>Top 10 clientes</h2><p>Clientes com maior valor comprado.</p></div></div><div className="owner-table-wrap"><table className="owner-table"><thead><tr><th>#</th><th>Cliente</th><th>Compras</th><th>Ultima compra</th><th className="numeric">Total</th></tr></thead><tbody>{(customers.data?.customers || []).map((row, index) => <tr key={row.customer_id}><td>{index + 1}</td><td>{row.customer_name}</td><td>{row.purchases}</td><td>{ownerDate(row.last_purchase)}</td><td className="numeric">{cents(row.total_cents)}</td></tr>)}{!customers.data?.customers?.length && <tr><td colSpan="5" className="owner-empty">Nenhum cliente no periodo.</td></tr>}</tbody></table></div></section></OwnerBlock>
+    </div>
+
+    <OwnerBlock state={sellers}><section className="panel owner-sellers"><div className="owner-heading"><div><h2>Performance dos vendedores</h2><p>Vendas, faturamento, ticket medio e comissao.</p></div></div><div className="seller-performance"><div className="owner-table-wrap"><table className="owner-table"><thead><tr><th>Vendedor</th><th>Vendas</th><th className="numeric">Faturamento</th><th className="numeric">Ticket medio</th><th className="numeric">Comissao</th></tr></thead><tbody>{(sellers.data?.sellers || []).map((row) => <tr key={row.seller_id}><td>{row.seller_name}</td><td>{row.sales}</td><td className="numeric">{cents(row.revenue_cents)}</td><td className="numeric">{cents(row.average_ticket_cents)}</td><td className="numeric">{cents(row.commission_cents)}</td></tr>)}{!sellers.data?.sellers?.length && <tr><td colSpan="5" className="owner-empty">Nenhuma venda no periodo.</td></tr>}</tbody></table></div><div className="seller-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={sellerChart} layout="vertical" margin={{ left: 12, right: 12 }}><CartesianGrid stroke="#e4e9e2" horizontal={false} /><XAxis type="number" tickFormatter={(value) => `R$ ${Math.round(value)}`} /><YAxis type="category" dataKey="seller_name" width={110} /><Tooltip formatter={(value) => [money(value), "Faturamento"]} /><Bar dataKey="revenue" fill="#ffbf47" radius={[0, 4, 4, 0]} /></BarChart></ResponsiveContainer></div></div></section></OwnerBlock>
+  </section>;
 }
 
 function Metric({ label, value }) {

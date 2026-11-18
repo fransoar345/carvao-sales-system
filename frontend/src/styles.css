@@ -111,6 +111,46 @@ textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
 .finance-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .finance-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .finance-subtitle { margin-top: 14px; padding-top: 16px; border-top: 1px solid #edf1eb; }
+.owner-page { display: grid; gap: 16px; }
+.owner-period { display: flex; gap: 6px; overflow-x: auto; padding: 5px; background: #e6ece5; border: 1px solid #d5ded3; border-radius: 8px; }
+.owner-period button { flex: 1 0 auto; min-height: 42px; padding: 0 16px; border-radius: 6px; background: transparent; color: #435047; font-weight: 700; }
+.owner-period button.active { background: #18231c; color: #fff; }
+.owner-summary { background: #fff; border: 1px solid #dfe6dd; border-radius: 8px; padding: 18px; box-shadow: 0 10px 26px rgba(29, 46, 33, 0.06); }
+.owner-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.owner-heading h2 { margin: 0 0 4px; }
+.owner-heading p, .owner-heading > span { color: #66756b; font-size: 13px; }
+.owner-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 20px; }
+.owner-kpi { min-height: 92px; display: grid; align-content: space-between; padding: 14px; border: 1px solid #dfe6dd; border-radius: 8px; background: #f8faf7; }
+.owner-kpi span { color: #66756b; font-size: 13px; }
+.owner-kpi strong { font-size: 24px; }
+.owner-kpi.delivery { border-left-width: 4px; }
+.owner-kpi.delivered { border-left-color: #2e9b5f; background: #f1faf4; }
+.owner-kpi.pending { border-left-color: #e2a728; background: #fff9eb; }
+.owner-kpi.failed { border-left-color: #c83c35; background: #fff3f2; }
+.owner-sales-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 16px; border-top: 1px solid #edf1eb; }
+.owner-sales-head h3 { margin: 0; font-size: 15px; }
+.owner-sales-head select { width: 190px; }
+.owner-table-wrap { width: 100%; overflow-x: auto; }
+.owner-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.owner-table th { padding: 12px 10px; border-bottom: 1px solid #dfe6dd; color: #66756b; text-align: left; white-space: nowrap; }
+.owner-table td { padding: 13px 10px; border-bottom: 1px solid #edf1eb; vertical-align: middle; }
+.owner-table tr:last-child td { border-bottom: 0; }
+.owner-table .numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.owner-status { display: inline-flex; padding: 4px 8px; border-radius: 999px; background: #edf1eb; color: #445048; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.owner-status.entregue { background: #dff3e5; color: #176b37; }
+.owner-status.pendente, .owner-status.em_rota { background: #fff1cc; color: #7a4d00; }
+.owner-status.nao_entregue { background: #fee4e2; color: #912018; }
+.owner-empty { color: #66756b; text-align: center; padding: 28px !important; }
+.owner-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; align-items: stretch; }
+.owner-grid > .panel { min-width: 0; }
+.owner-chart, .owner-customers { min-height: 390px; }
+.chart-frame { width: 100%; height: 300px; }
+.seller-performance { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(340px, .75fr); gap: 18px; align-items: stretch; }
+.seller-chart { min-height: 280px; }
+.owner-loading { min-height: 180px; display: grid; place-items: center; color: #66756b; }
+.owner-error { min-height: 180px; display: grid; place-items: center; align-content: center; gap: 8px; color: #912018; text-align: center; }
+.owner-error span { color: #66756b; font-size: 13px; }
+.owner-error button { min-height: 38px; padding: 0 12px; border-radius: 8px; background: #e6ece5; color: #17201a; }
 .access-page { display: grid; gap: 16px; }
 .access-columns { display: grid; grid-template-columns: minmax(360px, 1.2fr) minmax(300px, .8fr); gap: 16px; align-items: start; }
 .permission-groups { display: grid; gap: 10px; max-height: 520px; overflow: auto; padding-right: 4px; }
@@ -141,6 +181,12 @@ textarea { min-height: 88px; padding-top: 12px; resize: vertical; }
   .sale-price { width: calc(100% - 52px); flex-basis: calc(100% - 52px); }
   .finance-columns, .finance-metrics { grid-template-columns: 1fr; }
   .finance-tabs button { flex: 0 0 auto; }
+  .owner-period button { flex: 0 0 auto; }
+  .owner-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .owner-kpi:first-child { grid-column: 1 / -1; }
+  .owner-grid, .seller-performance { grid-template-columns: 1fr; }
+  .owner-sales-head, .owner-heading { align-items: flex-start; }
+  .seller-chart { min-height: 320px; }
   .access-columns { grid-template-columns: 1fr; }
   .user-create-grid { grid-template-columns: 1fr; }
   .customer-fields.compact .field:nth-child(4), .customer-fields.compact .field:nth-child(5) { grid-column: auto; }
